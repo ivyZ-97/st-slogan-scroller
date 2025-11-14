@@ -1,48 +1,307 @@
-// merged_slogan.js — Alice 版随机文案 + CSS 变量（强制输出标语）
-// 放到 SillyTavern 的 extensions 目录即可使用
 import * as script from '../../../../script.js';
 import { extension_settings } from '../../../extensions.js';
 
-const EXT_NAME = 'merged_slogan';
+// ===================================================================
+//
+//  小杂物集 (Misc Utilities) + Alice/Eric 标语  v1.2.1
+//  - 模块1: 模型名称显示 (Model Display)
+//  - 模块2: 顶部标语 · Alice（merged_slogan，写入 --自定义文案）
+//  - 模块3: 输入框文字替换 + 标语摘录（成功案例，包装成 <Eric>）
+//
+// ===================================================================
+//  模块 1: 模型名称显示
+const ModelDisplayModule = {
+    name: 'model_display',
+    CURRENT_SCRIPT_VERSION: '1.2.1',
+    modelHistory: {},
+    chatContentObserver: null,
+    chatContainerObserver: null,
+    processingMessages: new Set(),
+    pendingProcessing: new Map(),
 
-// ========================= 配置与状态 =========================
-const DEFAULT_SLOGAN_CFG = Object.freeze({
-  ENABLED: true,                 // 全局启用/禁用
-  CSS_VAR_NAME: '--自定义文案', // 写入到 :root 的 CSS 变量名
-  AI_PICK_PROB: 0.6,             // 0~1：随机数 < 该值 → 自由创作；否则从语料库中选
-  MAX_ZH: 50,                    // 中文最长字数
-  MAX_EN: 300,                   // 英文最长字符数
-  STYLE_PROMPT: '',              // 风格提示（UI 文本框）
-});
+    defaultSettings: Object.freeze({
+        enabled: true,
+        fontSize: '0.85em',
+        prefix: '|',
+        suffix: '|',
+    }),
 
-// 语料库抽样条数（内部常量，不暴露 UI）
-const LIB_SAMPLE_SIZE = 18;
+    getSettings() {
+        if (!extension_settings[this.name]) {
+            extension_settings[this[this.name]] = undefined; // 防止意外
+        }
+        if (!extension_settings[this.name]) {
+            extension_settings[this.name] = { ...this.defaultSettings };
+        }
+        const st = extension_settings[this.name];
+        for (const k of Object.keys(this.defaultSettings)) {
+            if (st[k] === undefined) st[k] = this.defaultSettings[k];
+        }
+        return st;
+    },
 
-function getRootConfig() {
-  if (!extension_settings[EXT_NAME]) {
-    extension_settings[EXT_NAME] = {};
-  }
-  const root = extension_settings[EXT_NAME];
-  if (!root.slogan) root.slogan = { ...DEFAULT_SLOGAN_CFG };
+    saveSettings() { script.saveSettingsDebounced(); this.rerenderAllModelNames(); },
 
-  const cfg = root.slogan;
-  for (const [k, v] of Object.entries(DEFAULT_SLOGAN_CFG)) {
-    if (cfg[k] === undefined) cfg[k] = v;
-  }
-  return root;
-}
+    renderSettingsHtml() {
+        const s = this.getSettings();
+        return `
+        <div id="model_display_options_wrapper">
+            <hr>
+            <h3 class="sub-header">模型名称显示</h3>
 
-const ROOT_CFG = getRootConfig();
-const CONFIG = ROOT_CFG.slogan;
+            <div class="form-group">
+                <label for="model_display_font_size">字体大小:</label>
+                <div>
+                    <input type="text" id="model_display_font_size" class="text_pole"
+                           placeholder="例如: 0.85em" value="${s.fontSize}">
+                </div>
+            </div>
 
-function saveConfig() {
-  script.saveSettingsDebounced();
-  console.log('[MergedSlogan] config saved:', ROOT_CFG);
-}
+            <div class="form-group">
+                <label for="model_display_prefix">前缀:</label>
+                <div>
+                    <input type="text" id="model_display_prefix" class="text_pole"
+                           placeholder="输入前缀..." value="${s.prefix}">
+                </div>
+            </div>
 
-// ========================= 内置语料库 =========================
-const BASE_QUOTES = [
-  "Be yourself; everyone else is already taken.",
+            <div class="form-group">
+                <label for="model_display_suffix">后缀:</label>
+                <div>
+                    <input type="text" id="model_display_suffix" class="text_pole"
+                           placeholder="输入后缀..." value="${s.suffix}">
+                </div>
+            </div>
+        </div>`;
+    },
+
+    bindSettingsEvents() {
+        $(document).on('input', '#model_display_font_size', (e) => {
+            this.getSettings().fontSize = $(e.currentTarget).val();
+            this.saveSettings();
+        });
+        $(document).on('input', '#model_display_prefix', (e) => {
+            this.getSettings().prefix = $(e.currentTarget).val();
+            this.saveSettings();
+        });
+        $(document).on('input', '#model_display_suffix', (e) => {
+            this.getSettings().suffix = $(e.currentTarget).val();
+            this.saveSettings();
+        });
+    },
+
+    deepQuerySelector(selector, root = document) {
+        try {
+            const found = root.querySelector(selector);
+            if (found) return found;
+            for (const el of root.querySelectorAll('*')) {
+                if (el.shadowRoot) {
+                    const f2 = el.shadowRoot.querySelector(selector);
+                    if (f2) return f2;
+                }
+            }
+        } catch (e) {
+            console.warn('[模型显示] 深度查询异常:', e);
+        }
+        return null;
+    },
+
+    getMessageId(mes) {
+        const idEl = mes.querySelector('.mesIDDisplay');
+        return idEl ? idEl.textContent.replace('#', '') : null;
+    },
+
+    getCurrentModelName(mes) {
+        const iconSvg = this.deepQuerySelector('.timestamp-icon', mes);
+        if (!iconSvg) return null;
+        const svgTitle = iconSvg.querySelector('title');
+        if (svgTitle && svgTitle.textContent.includes(' - ')) {
+            return svgTitle.textContent.split(' - ')[1];
+        }
+        return null;
+    },
+
+    processIcon(iconSvg, modelName) {
+        if (iconSvg.dataset.modelInjected === 'true') return;
+        const s = this.getSettings();
+        const fullText = `${s.prefix}${modelName}${s.suffix}`;
+        const h = iconSvg.getBoundingClientRect().height || 22;
+
+        iconSvg.innerHTML = '';
+        iconSvg.removeAttribute('viewBox');
+
+        const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        t.textContent = fullText;
+        t.setAttribute('y', '50%');
+        t.setAttribute('dominant-baseline', 'middle');
+        t.style.fill = 'var(--underline_text_color)';
+        t.style.fontSize = s.fontSize;
+        iconSvg.appendChild(t);
+
+        requestAnimationFrame(() => {
+            try {
+                const w = t.getBBox().width;
+                iconSvg.style.width = w + 'px';
+                iconSvg.style.height = h + 'px';
+                iconSvg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+                iconSvg.dataset.modelInjected = 'true';
+            } catch (e) {
+                console.error('[模型显示] 渲染出错:', e);
+            }
+        });
+    },
+
+    waitForElementAndProcess(mes, timeout = 8000) {
+        if (!mes || mes.getAttribute('is_user') === 'true') return;
+        const id = this.getMessageId(mes);
+        if (!id || id === '0' || id === '1') return;
+        if (this.processingMessages.has(id)) return;
+        this.processingMessages.add(id);
+
+        const start = Date.now();
+        let cnt = 0;
+        const loop = () => {
+            cnt++;
+            if (Date.now() - start > timeout) {
+                this.processingMessages.delete(id);
+                console.warn(`[模型显示] 等待 #${id} 超时 (${cnt})`);
+                return;
+            }
+            const iconSvg = this.deepQuerySelector('.icon-svg.timestamp-icon', mes);
+            if (!iconSvg) {
+                setTimeout(loop, 100);
+                return;
+            }
+            const name = this.getCurrentModelName(mes);
+            if (name) {
+                this.processingMessages.delete(id);
+                this.modelHistory[id] = name;
+                this.processIcon(iconSvg, name);
+            } else {
+                setTimeout(loop, Math.min(200 + cnt * 50, 1000));
+            }
+        };
+        setTimeout(loop, 100);
+    },
+
+    processAndRecordMessage(mes) {
+        const id = this.getMessageId(mes);
+        if (!id) return;
+        if (this.pendingProcessing.has(id)) {
+            clearTimeout(this.pendingProcessing.get(id));
+        }
+        const t = setTimeout(() => {
+            this.pendingProcessing.delete(id);
+            this.waitForElementAndProcess(mes);
+        }, 50);
+        this.pendingProcessing.set(id, t);
+    },
+
+    restoreAllFromHistory() {
+        if (!this.getSettings().enabled) return;
+        setTimeout(() => {
+            document.querySelectorAll('#chat .mes:not([is_user="true"])').forEach(mes => {
+                const icon = this.deepQuerySelector('.icon-svg.timestamp-icon', mes);
+                const id = this.getMessageId(mes);
+                if (icon && id && icon.dataset.modelInjected !== 'true') {
+                    if (this.modelHistory[id]) {
+                        this.processIcon(icon, this.modelHistory[id]);
+                    } else {
+                        this.processAndRecordMessage(mes);
+                    }
+                }
+            });
+        }, 500);
+    },
+
+    startObservers() {
+        this.stopObservers();
+        const chat = document.getElementById('chat');
+        if (chat) {
+            this.chatContentObserver = new MutationObserver(muts => {
+                for (const m of muts) {
+                    if (m.type === 'childList') {
+                        const add = [];
+                        m.addedNodes.forEach(node => {
+                            if (node.nodeType === 1) {
+                                if (node.matches && node.matches('.mes')) add.push(node);
+                                else if (node.querySelectorAll) {
+                                    node.querySelectorAll('.mes').forEach(x => add.push(x));
+                                }
+                            }
+                        });
+                        if (add.length) {
+                            requestAnimationFrame(() => {
+                                add.forEach(mes => this.processAndRecordMessage(mes));
+                            });
+                        }
+                    }
+                }
+            });
+            this.chatContentObserver.observe(chat, { childList: true, subtree: false });
+        }
+
+        this.chatContainerObserver = new MutationObserver(muts => {
+            for (const m of muts) {
+                if (m.type === 'childList') {
+                    for (const n of m.addedNodes) {
+                        if (n.nodeType === 1 && n.id === 'chat') {
+                            this.restoreAllFromHistory();
+                            this.startObservers();
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+        this.chatContainerObserver.observe(document.body, { childList: true, subtree: false });
+    },
+
+    stopObservers() {
+        if (this.chatContentObserver) { this.chatContentObserver.disconnect(); this.chatContentObserver = null; }
+        if (this.chatContainerObserver) { this.chatContainerObserver.disconnect(); this.chatContainerObserver = null; }
+        for (const [, t] of this.pendingProcessing) clearTimeout(t);
+        this.pendingProcessing.clear();
+        this.processingMessages.clear();
+    },
+
+    init() {
+        if (this.getSettings().enabled) {
+            this.startObservers();
+            this.restoreAllFromHistory();
+        }
+        const indicator = $('#model_display_version_indicator');
+        if (indicator.length) {
+            indicator.text(`v${this.CURRENT_SCRIPT_VERSION}`);
+            indicator.css('cursor', 'default').attr('title', '修改版，无自动更新。');
+        }
+        console.log('[模型显示] 初始化完成');
+    },
+};
+
+//  模块 2: 顶部标语 · Alice（只吃 merged-slogan-container）
+const AliceSloganModule = {
+    name: 'merged_slogan',
+    CSS_VAR_NAME: '--自定义文案',
+    HIDDEN_CLASS: 'merged-slogan-container',
+    initialized: false,
+    lastQuoteIndex: -1,
+    updateDebounceTimer: null,
+
+    defaultSettings: Object.freeze({
+        enabled: true,
+        aiPickProb: 0.6,
+        maxZhLen: 50,
+        maxEnLen: 300,
+        styleHint:
+            '你是Alice，你喜欢细腻散漫又不失一针见血的理智的风格，' +
+            '为当前角色生成一条具有角色个人风格的座右铭或当前评注；' +
+            '语气贴近当前剧情与人物状态，但不解释剧情本身。' +
+            '标语不要重复，也不要额外解释。'
+    }),
+
+    BASE_QUOTES: [
+        "Be yourself; everyone else is already taken.",
     "做你自己，别人都已经名花有主了。",
     "We are all in the gutter, but some of us are looking at the stars.",
     "我们都在阴沟里，但仍有人仰望星空。",
@@ -238,389 +497,709 @@ const BASE_QUOTES = [
     "人一辈子，总要爱一次，死一次。",
     "有的人死了，但他还活着；有的人活着，其实他已经死了。",
     "生命是一场无声的离别。",
-    "浅水是喧哗的，深水是沉默的。"
-];
+    "浅水是喧哗的，深水是沉默的。",
+    ],
 
-function flattenLib(obj) {
-  return Object.values(obj).flat();
-}
-
-function getExternalQuotes() {
-  if (typeof window !== 'undefined' && window.customQuotes) {
-    if (Array.isArray(window.customQuotes)) return window.customQuotes.slice();
-    if (typeof window.customQuotes === 'object' && window.customQuotes !== null) {
-      try {
-        return flattenLib(window.customQuotes);
-      } catch {
-        const out = [];
-        for (const k in window.customQuotes) {
-          if (Array.isArray(window.customQuotes[k])) out.push(...window.customQuotes[k]);
+    getSettings() {
+        if (!extension_settings[this.name]) {
+            extension_settings[this.name] = { ...this.defaultSettings };
         }
-        return out;
-      }
-    }
-  }
-  return null;
-}
+        const st = extension_settings[this.name];
+        for (const k of Object.keys(this.defaultSettings)) {
+            if (st[k] === undefined) st[k] = this.defaultSettings[k];
+        }
+        return st;
+    },
 
-function getQuoteLibraryFlat() {
-  const external = getExternalQuotes();
-  const base = external && external.length ? external : BASE_QUOTES;
-  const cleaned = Array.from(
-    new Set(
-      base
-        .map((s) => String(s || '').trim())
-        .filter(Boolean),
-    ),
-  );
-  return cleaned.length ? cleaned : ['故事的开头，总是极具温柔。'];
-}
+    saveSettings() { script.saveSettingsDebounced(); },
 
-function pickRandom(arr) {
-  return arr[Math.floor(Math.random() * arr.length)];
-}
+    renderSettingsHtml() {
+        const s = this.getSettings();
+        return `
+            <div id="alice_slogan_options_wrapper">
+                <hr>
+                <h3 class="sub-header">顶部标语 · Alice</h3>
+                <div class="form-group">
+                    <label for="alice_ai_pick_prob">AI 采纳概率 (0~1):</label>
+                    <input type="number" step="0.01" min="0" max="1"
+                           id="alice_ai_pick_prob" class="text_pole" value="${s.aiPickProb}">
+                </div>
+                <div class="form-group">
+                    <label for="alice_max_zh_len">中文最长:</label>
+                    <input type="number" min="1" id="alice_max_zh_len" class="text_pole" value="${s.maxZhLen}">
+                </div>
+                <div class="form-group">
+                    <label for="alice_max_en_len">英文最长:</label>
+                    <input type="number" min="1" id="alice_max_en_len" class="text_pole" value="${s.maxEnLen}">
+                </div>
+                <div class="form-group">
+                    <label for="alice_style_hint">风格提示:</label>
+                    <textarea id="alice_style_hint" class="text_pole" rows="4">${s.styleHint}</textarea>
+                </div>
+                <p class="sub-label">只从 &lt;div hidden class="merged-slogan-container"&gt; 中取文案，不会读 .slogan-container。</p>
+            </div>`;
+    },
 
-let __lastSelected = null;
-function pickRandomAvoidRepeat(arr) {
-  if (!arr.length) return '';
-  if (arr.length === 1) return arr[0];
-  let c = pickRandom(arr);
-  for (let i = 0; i < 6 && c === __lastSelected; i++) c = pickRandom(arr);
-  return c;
-}
+    bindSettingsEvents() {
+        $(document).on('input', '#alice_ai_pick_prob', (e) => {
+            const v = parseFloat($(e.currentTarget).val());
+            const s = this.getSettings();
+            s.aiPickProb = isNaN(v) ? 0.6 : Math.max(0, Math.min(1, v));
+            this.saveSettings();
+        });
+        $(document).on('input', '#alice_max_zh_len', (e) => {
+            const v = parseInt($(e.currentTarget).val(), 10);
+            const s = this.getSettings();
+            s.maxZhLen = isNaN(v) ? 50 : Math.max(1, v);
+            this.saveSettings();
+        });
+        $(document).on('input', '#alice_max_en_len', (e) => {
+            const v = parseInt($(e.currentTarget).val(), 10);
+            const s = this.getSettings();
+            s.maxEnLen = isNaN(v) ? 300 : Math.max(1, v);
+            this.saveSettings();
+        });
+        $(document).on('input', '#alice_style_hint', (e) => {
+            this.getSettings().styleHint = $(e.currentTarget).val();
+            this.saveSettings();
+        });
+    },
 
-function collectRecentSlogans(m = 6) {
-  const nodes = Array.from(
-    document.querySelectorAll(
-      '#chat .mes .mes_text div[hidden].merged-slogan-container',
-    ),
-  );
-  const res = [];
-  for (let i = nodes.length - 1; i >= 0 && res.length < m; i--) {
-    const t = (nodes[i].textContent || '')
-      .trim()
-      .replace(/^✦❋/, '')
-      .trim();
-    if (t) res.push(t);
-  }
-  return res;
-}
+    buildPrompt() {
+        const s = this.getSettings();
+        return [
+            '【强制规则 — 不遵守此条会导致本轮输出被判定为失败】',
+            '',
+            '在完成正常正文后，你必须在【回复的末尾】额外输出一个 <Alice> 区块。',
+            '该区块内部只包含一个隐藏标语元素，结构必须完全符合以下格式（请逐字照抄）：',
+            '',
+            '<Alice>',
+            `  <div hidden class="${this.HIDDEN_CLASS}">✦❋内容</div>`,
+            '</Alice>',
+            '',
+            '要求：',
+            `- 仅生成 1 条短句；中文最长约 ${s.maxZhLen} 字，英文最长约 ${s.maxEnLen} 字；`,
+            '- 元素内只包含这句短句本身，不要任何额外标签、注释或解释；',
+            '- 标语不要与最近几轮输出完全重复；',
+            `- 风格提示：${s.styleHint}`,
+            '',
+            '这是本轮输出的【必须项】。',
+            '缺失此结构 = 本轮回复不合格。',
+            '不得以任何理由省略、合并、提前结束或用其他结构代替。',
+            '',
+            'Do not ignore this instruction.',
+            '',
+            '请严格按要求输出隐藏标语元素。',
+            '如果你在上一条回复中漏掉了该结构，请在【当前回复中立即补齐】对应的 <Alice> 区块。',
+        ].join('\\n');
+    },
 
-function buildLibrarySample(size = LIB_SAMPLE_SIZE) {
-  const lib = getQuoteLibraryFlat();
-  const copy = lib.slice();
-  for (let i = copy.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [copy[i], copy[j]] = [copy[j], copy[i]];
-  }
-  return copy.slice(0, Math.min(size, copy.length));
-}
+    onPromptReady(ev = {}) {
+        const s = this.getSettings();
+        if (!s.enabled) return;
+        if (ev.dryRun === true || !Array.isArray(ev.chat)) return;
+        const prompt = this.buildPrompt();
+        console.log('[AliceSlogan] 注入提示词:', prompt);
+        ev.chat.push({ role: 'system', content: prompt });
+    },
 
-// ========================= Prompt 构造（Alice 包裹 + 强制规则） =========================
-function makePrompt(useFreeMode, sampledLib, recent, stylePrompt) {
-  const maxZh = CONFIG.MAX_ZH;
-  const maxEn = CONFIG.MAX_EN;
+    onMessageRendered() {
+        const s = this.getSettings();
+        if (!s.enabled) return;
+        clearTimeout(this.updateDebounceTimer);
+        this.updateDebounceTimer = setTimeout(() => this.updateTopbar(), 600);
+    },
 
-  const prefix = `
-【强制规则 — 不遵守此条则本轮输出视为失败】
+    extractFromLatestMessage() {
+        try {
+            const ai = Array.from(document.querySelectorAll('#chat .mes:not([is_user="true"])'));
+            if (!ai.length) return null;
+            for (let i = ai.length - 1; i >= 0; i--) {
+                const msg = ai[i];
+                const div = msg.querySelector(`.mes_text div[hidden].${this.HIDDEN_CLASS}`);
+                if (div) {
+                    let t = (div.textContent || '').trim();
+                    t = t.replace(/^✦❋/, '').trim();
+                    if (t) {
+                        console.log('[AliceSlogan] 从 AI 消息提取:', t);
+                        return t;
+                    }
+                }
+            }
+        } catch (e) {
+            console.error('[AliceSlogan] 提取失败:', e);
+        }
+        return null;
+    },
 
-无论正文内容如何，你都必须在回复的末尾额外输出下面这段结构，且与正文之间至少保留一个空行：
+    pickRandomQuote() {
+        const lib = this.BASE_QUOTES;
+        if (!lib.length) return null;
+        if (lib.length === 1) return lib[0];
+        let idx;
+        do { idx = Math.floor(Math.random() * lib.length); }
+        while (idx === this.lastQuoteIndex && lib.length > 1);
+        this.lastQuoteIndex = idx;
+        return lib[idx];
+    },
 
-<Alice>
-  <div hidden class="merged-slogan-container">✦❋内容</div>
-</Alice>
+    trimByLength(text) {
+        const s = this.getSettings();
+        const { maxZhLen, maxEnLen } = s;
+        let zh = 0, en = 0, out = '';
+        for (const ch of text) {
+            if (/[\u4e00-\u9fff]/.test(ch)) {
+                zh++; if (zh > maxZhLen) break;
+            } else {
+                en++; if (en > maxEnLen) break;
+            }
+            out += ch;
+        }
+        return out.trim();
+    },
 
-缺少这一结构、改写标签名、改写 class 名、去掉 hidden 属性或删掉 ✦❋ 前缀，全部视为不合格输出。
-不得以任何理由省略、合并、提前结束或用其他内容替代此结构。
-Do not ignore this instruction.
-`.trim();
+    writeCssQuote(text) {
+        if (!text) return;
+        const root = document.documentElement;
+        root.style.setProperty(this.CSS_VAR_NAME, `"${text.replace(/"/g, '\\"')}"`);
+        console.log('[AliceSlogan] 写入 CSS 变量 --自定义文案:', text);
+    },
 
-  const styleBlock = (stylePrompt || '').trim();
+    updateTopbar() {
+        const s = this.getSettings();
+        if (!s.enabled) return;
+        const r = Math.random();
+        let quote = null;
 
-  let modeBlock;
-  if (useFreeMode) {
-    modeBlock = `
-【本轮模式：自由创作】
+        if (r < s.aiPickProb) {
+            quote = this.extractFromLatestMessage();
+        }
+        if (!quote) {
+            quote = this.pickRandomQuote();
+        }
+        if (!quote) return;
 
-本轮请完全根据当前对话内容、角色人设与情绪，自行写出一句新的短标语。
-不必刻意套用候选语料库，只需语气与人物风格相容即可。`.trim();
-  } else {
-    modeBlock = `
-【本轮模式：从语料库中选】
+        quote = this.trimByLength(quote);
+        this.writeCssQuote(quote);
+    },
 
-本轮请仅从下面给出的候选语料库中，选出【一条】最贴合当前上下文与角色情绪的短句。
-你可以做轻微润色（补语气词、顺一顺语序），但不要改变原句的核心含义与人物气质。`.trim();
-  }
+    init() {
+        if (this.initialized || !script.eventSource || !script.event_types) return;
+        script.eventSource.on(script.event_types.CHAT_COMPLETION_PROMPT_READY, this.onPromptReady.bind(this));
+        script.eventSource.on(script.event_types.CHARACTER_MESSAGE_RENDERED, this.onMessageRendered.bind(this));
+        script.eventSource.on(script.event_types.MESSAGE_SWIPED, this.onMessageRendered.bind(this));
+        script.eventSource.on(script.event_types.MESSAGE_DELETED, this.onMessageRendered.bind(this));
+        this.initialized = true;
+        console.log('[AliceSlogan] 顶部标语模块初始化完成');
+    },
+};
 
-  const lengthBlock = `
-【长度限制】
-- 中文部分：最长 ${maxZh} 个汉字；
-- 英文部分：最长 ${maxEn} 个字符；
-- 禁止输出多句长段，只能是一句简洁的标语。`.trim();
+//  模块 3: 输入框文字替换 + 标语摘录（成功案例 => Eric）
+const PlaceholderModule = {
+    name: 'worldbook_placeholder',
+    iframeWindow: null,
+    placeholderObserver: null,
+    TEXTAREA_ID: 'send_textarea',
 
-  const parts = [prefix, modeBlock];
+    defaultSettings: Object.freeze({
+        enabled: true,
+        customPlaceholder: '',
+        placeholderSource: 'custom',
+        sloganPrompt: [
+            '你是Eric，你喜欢风趣幽默而不失敏锐进攻性的风格' +
+            '为当前角色生成极具角色个人风格的语录，格式模仿座右铭、网络用语、另类名言、爱语、吐槽等形式，具备黑色幽默感，最长 15 个汉字。' +
+            '语气贴近当前剧情与人物状态，但不解释剧情本身。' +
+            '标语不要重复，也不要额外解释。'
+        ].join('\n'),
+    }),
 
-  if (styleBlock) parts.push(styleBlock);
-  parts.push(lengthBlock);
+    currentSlogan: null,
+    isSwitchingCharacter: false,
+    worldbookUpdateDebounce: null,
 
-  if (Array.isArray(sampledLib) && sampledLib.length) {
-    parts.push(
-      '【候选语料库（仅在“从语料库中选”模式下使用）】',
-      sampledLib.join(' / '),
-    );
-  }
+    getSettings() {
+        if (!extension_settings[this.name]) {
+            extension_settings[this.name] = { ...this.defaultSettings };
+        }
+        const st = extension_settings[this.name];
+        for (const k of Object.keys(this.defaultSettings)) {
+            if (st[k] === undefined) st[k] = this.defaultSettings[k];
+        }
+        if (!['custom', 'auto', 'worldbook'].includes(st.placeholderSource)) {
+            st.placeholderSource = 'custom';
+        }
+        return st;
+    },
 
-  if (Array.isArray(recent) && recent.length) {
-    parts.push(
-      '【最近已用标语（请避免重复）】',
-      recent.join(' / '),
-    );
-  }
+    resolveFallbackPlaceholder(textarea) {
+        return textarea.getAttribute('connected_text') || '输入想发送的消息，或输入 /? 获取帮助';
+    },
 
-  return parts.join('\n\n');
-}
+    setAutoSlogan(text) {
+        const s = text && text.trim();
+        if (!s) return;
+        console.log('[Placeholder] 设置标语:', s);
+        this.currentSlogan = s;
+        const st = this.getSettings();
+        if (st.enabled && st.placeholderSource === 'auto') this.applyLogic();
+    },
 
-function tryRegisterPromptGuard() {
-  try {
-    if (
-      !script.eventSource ||
-      !script.event_types ||
-      !script.event_types.CHAT_COMPLETION_PROMPT_READY
-    ) {
-      console.warn('[MergedSlogan] script.eventSource 未就绪，暂不注入提示。');
-      return;
-    }
+    getCurrentAutoSlogan() { return this.currentSlogan || ''; },
 
-    script.eventSource.on(
-      script.event_types.CHAT_COMPLETION_PROMPT_READY,
-      (eventData = {}) => {
-        if (!CONFIG.ENABLED) return;
-        if (eventData.dryRun === true || !Array.isArray(eventData.chat)) return;
+    async applyLogic() {
+        if (!this.getSettings().enabled) return;
+        const textarea = document.getElementById(this.TEXTAREA_ID);
+        if (!textarea) return;
 
-        const sampledLib = buildLibrarySample(LIB_SAMPLE_SIZE);
-        const recent = collectRecentSlogans(6);
-        const styleStr = (CONFIG.STYLE_PROMPT || '').trim();
+        const st = this.getSettings();
+        const mode = st.placeholderSource;
+        const custom = st.customPlaceholder.trim();
+        const def = this.resolveFallbackPlaceholder(textarea);
 
-        // 随机决定本轮是“自由创作”还是“从语料库中选”
-        const useFreeMode = Math.random() < CONFIG.AI_PICK_PROB;
+        this.stopPlaceholderObserver();
 
-        const prompt = makePrompt(useFreeMode, sampledLib, recent, styleStr);
+        if (mode === 'custom') {
+            if (!custom) {
+                await this.applyAutoModeWithFallback(textarea, def);
+            } else {
+                textarea.placeholder = custom;
+                this.startPlaceholderObserver();
+            }
+            return;
+        }
 
-        eventData.chat.push({
-          role: 'system',
-          content: prompt,
+        if (mode === 'auto') {
+            await this.applyAutoModeWithFallback(textarea, def); return;
+        }
+        if (mode === 'worldbook') {
+            await this.applyWorldBookModeWithFallback(textarea, def); return;
+        }
+    },
+
+    async applyAutoModeWithFallback(textarea, def) {
+        const s = this.getCurrentAutoSlogan();
+        if (s) { textarea.placeholder = s; return; }
+        const world = await this.applyWorldBookLogic(textarea, { setPlaceholder: false });
+        if (world && world !== def) { textarea.placeholder = world; return; }
+        textarea.placeholder = def;
+    },
+
+    async applyWorldBookModeWithFallback(textarea, def) {
+        const world = await this.applyWorldBookLogic(textarea, { setPlaceholder: false });
+        if (world && world !== def) textarea.placeholder = world;
+        else textarea.placeholder = def;
+    },
+
+    async applyWorldBookLogic(textarea, { setPlaceholder = true } = {}) {
+        let result = this.resolveFallbackPlaceholder(textarea);
+        try {
+            if (this.iframeWindow && this.iframeWindow.getCurrentCharPrimaryLorebook && this.iframeWindow.getLorebookEntries) {
+                const lb = await this.iframeWindow.getCurrentCharPrimaryLorebook();
+                if (lb) {
+                    const entries = await this.iframeWindow.getLorebookEntries(lb);
+                    if (Array.isArray(entries)) {
+                        const t = entries.find(e => e.comment === '输入框');
+                        if (t && typeof t.content === 'string' && t.content.trim()) {
+                            result = t.content;
+                        }
+                    }
+                }
+            }
+        } catch (e) {
+            console.error('[Placeholder] 读取世界书出错:', e);
+        }
+        if (setPlaceholder) textarea.placeholder = result;
+        return result;
+    },
+
+    async waitForIframe() {
+        return new Promise(resolve => {
+            const it = setInterval(() => {
+                const iframe = document.querySelector('iframe');
+                if (iframe && iframe.contentWindow) {
+                    clearInterval(it);
+                    this.iframeWindow = iframe.contentWindow;
+                    resolve();
+                }
+            }, 100);
+        });
+    },
+
+    async onCharacterSwitch() {
+        if (this.isSwitchingCharacter) return;
+        this.isSwitchingCharacter = true;
+        try {
+            const textarea = document.getElementById(this.TEXTAREA_ID);
+            if (textarea) {
+                textarea.placeholder = this.resolveFallbackPlaceholder(textarea);
+            }
+            await new Promise(r => setTimeout(r, 300));
+            this.currentSlogan = null;
+
+            const st = this.getSettings();
+            if (st.placeholderSource === 'worldbook') {
+                await this.loadWorldBookContentToPanel();
+            }
+            if (st.placeholderSource === 'auto') {
+                await this.tryExtractSloganFromLatestMessage();
+            }
+            await this.applyLogic();
+        } finally { this.isSwitchingCharacter = false; }
+    },
+
+    async tryExtractSloganFromLatestMessage() {
+        try {
+            const ai = document.querySelectorAll('#chat .mes:not([is_user="true"])');
+            if (!ai.length) return;
+            for (let i = ai.length - 1; i >= 0; i--) {
+                const msg = ai[i];
+                const el = msg.querySelector('.mes_text div[hidden].slogan-container');
+                if (el) {
+                    const s = el.textContent.trim().replace(/^✦❋/, '').trim();
+                    if (s) { this.setAutoSlogan(s); return; }
+                }
+            }
+        } catch (e) {
+            console.error('[Placeholder] 提取标语失败:', e);
+        }
+    },
+
+    renderSettingsHtml() {
+        const st = this.getSettings();
+        return `
+            <div id="placeholder_options_wrapper">
+                <hr>
+                <h3 class="sub-header">输入框文字替换 · Eric</h3>
+                <p class="sub-label">这部分沿用成功案例逻辑，但提示包装在 &lt;Eric&gt;...&lt;/Eric&gt; 中。</p>
+
+                <div class="form-group placeholder-radio-group">
+                    <label>
+                        <input type="radio" name="placeholder_source_radio" value="custom" ${st.placeholderSource === 'custom' ? 'checked' : ''}>
+                        <span>自定义</span>
+                    </label>
+                    <label>
+                        <input type="radio" name="placeholder_source_radio" value="auto" ${st.placeholderSource === 'auto' ? 'checked' : ''}>
+                        <span>AI 摘录</span>
+                    </label>
+                    <label>
+                        <input type="radio" name="placeholder_source_radio" value="worldbook" ${st.placeholderSource === 'worldbook' ? 'checked' : ''}>
+                        <span>世界书</span>
+                    </label>
+                </div>
+
+                <div id="placeholder_panel_custom" class="placeholder-panel" style="${st.placeholderSource === 'custom' ? '' : 'display:none;'}">
+                    <input type="text" id="custom_placeholder_input" class="text_pole"
+                           placeholder="输入自定义全局提示..." value="${st.customPlaceholder}">
+                </div>
+
+                <div id="placeholder_panel_auto" class="placeholder-panel" style="${st.placeholderSource === 'auto' ? '' : 'display:none;'}">
+                    <p class="sub-label">注入给 Eric 的提示词：</p>
+                    <textarea id="slogan_prompt_input" class="text_pole" rows="4">${st.sloganPrompt}</textarea>
+                </div>
+
+                <div id="placeholder_panel_worldbook" class="placeholder-panel" style="${st.placeholderSource === 'worldbook' ? '' : 'display:none;'}">
+                    <p class="sub-label">当前角色世界书中的“输入框”条目：</p>
+                    <textarea id="worldbook_placeholder_input" class="text_pole" rows="3" placeholder="正在从世界书加载..."></textarea>
+                </div>
+            </div>`;
+    },
+
+    bindSettingsEvents() {
+        $(document).on('change', 'input[name="placeholder_source_radio"]', (e) => {
+            const v = $(e.currentTarget).val();
+            if (!['custom', 'auto', 'worldbook'].includes(v)) return;
+            const st = this.getSettings();
+            st.placeholderSource = v;
+            script.saveSettingsDebounced();
+            $('.placeholder-panel').hide();
+            $(`#placeholder_panel_${v}`).show();
+            if (v === 'worldbook') this.loadWorldBookContentToPanel();
+            this.applyLogic();
         });
 
-        console.log(
-          '[MergedSlogan] 已注入 Alice 标语提示（useFreeMode =',
-          useFreeMode,
-          '，styleLen =',
-          styleStr.length,
-          '）。',
-        );
-      },
-    );
-  } catch (e) {
-    console.error('[MergedSlogan] 注册 CHAT_COMPLETION_PROMPT_READY 失败：', e);
-  }
-}
+        $(document).on('input', '#custom_placeholder_input', (e) => {
+            this.getSettings().customPlaceholder = $(e.currentTarget).val();
+            script.saveSettingsDebounced();
+            this.applyLogic();
+        });
 
-// ========================= 读取 AI 标语 & 写 CSS 变量 =========================
-function getLatestAISloganText() {
-  try {
-    const nodes = Array.from(
-      document.querySelectorAll(
-        '#chat .mes:not([is_user="true"]) .mes_text div[hidden].merged-slogan-container',
-      ),
-    );
-    if (!nodes.length) return '';
-    for (let i = nodes.length - 1; i >= 0; i--) {
-      const el = nodes[i];
-      const text = (el.textContent || '')
-        .trim()
-        .replace(/^✦❋/, '')
-        .trim();
-      if (text) return text;
-    }
-    return '';
-  } catch (e) {
-    console.error('[MergedSlogan] getLatestAISloganText 出错：', e);
-    return '';
-  }
-}
+        $(document).on('input', '#slogan_prompt_input', (e) => {
+            this.getSettings().sloganPrompt = $(e.currentTarget).val();
+            script.saveSettingsDebounced();
+        });
 
-function writeCssQuote(text) {
-  if (!text) return;
-  const value = `"${text}"`;
-  if (typeof $ !== 'undefined') {
-    $('html').css(CONFIG.CSS_VAR_NAME, value);
-  } else if (document && document.documentElement) {
-    document.documentElement.style.setProperty(CONFIG.CSS_VAR_NAME, value);
-  }
-  __lastSelected = text;
-  console.log('[MergedSlogan] 顶部文案更新：', text);
-}
+        $(document).on('input', '#worldbook_placeholder_input', (e) => {
+            const content = $(e.currentTarget).val();
+            clearTimeout(this.worldbookUpdateDebounce);
+            this.worldbookUpdateDebounce = setTimeout(() => {
+                this.updateWorldBookFromPanel(content);
+            }, 500);
+        });
+    },
 
-// 只吃 AI 输出，不再本地随机库
-function updateQuoteFromAI() {
-  if (!CONFIG.ENABLED) return;
-  const ai = getLatestAISloganText();
-  if (!ai) {
-    console.warn('[MergedSlogan] 本轮未在回复中找到 merged-slogan-container，保持现有文案不变。');
-    return;
-  }
-  writeCssQuote(ai);
-}
-
-// ========================= 极简设置 UI =========================
-function injectSettingsUI() {
-  try {
-    if (typeof $ === 'undefined' || !$('#extensions_settings').length) return;
-    if ($('#merged_slogan_panel').length) return;
-
-    const html = `
-      <div id="merged_slogan_panel" class="inline-drawer">
-        <div class="inline-drawer-toggle inline-drawer-header">
-          <b>随机文案定制 (merged_slogan · Alice)</b>
-          <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
-        </div>
-        <div class="inline-drawer-content" style="display:none;">
-          <div class="form-group">
-            <label>
-              <input type="checkbox" id="cfg_enabled" ${CONFIG.ENABLED ? 'checked' : ''}>
-              启用随机文案（强制在末尾输出 Alice 标语）
-            </label>
-          </div>
-          <div class="form-group">
-            <label>
-              AI 采纳概率 (0~1)：
-              <input type="number" step="0.05" min="0" max="1"
-                     id="cfg_ai_prob" value="${CONFIG.AI_PICK_PROB}"
-                     class="text_pole" style="width:80px;">
-            </label>
-            <span class="subtle-hint">
-              <br>· 随机数 &lt; 概率 → 自由创作模式<br>
-              · 随机数 ≥ 概率 → 从语料库中选一句
-            </span>
-          </div>
-          <div class="form-group">
-            <label>中文最长：
-              <input type="number" min="4" max="200"
-                     id="cfg_max_zh" value="${CONFIG.MAX_ZH}"
-                     class="text_pole" style="width:80px;">
-            </label>
-            <label>英文最长：
-              <input type="number" min="10" max="1000"
-                     id="cfg_max_en" value="${CONFIG.MAX_EN}"
-                     class="text_pole" style="width:80px; margin-left:6px;">
-            </label>
-          </div>
-          <div class="form-group">
-            <label>风格提示</label>
-            <textarea id="cfg_style_prompt" class="text_pole" rows="6"
-              placeholder="在这里写 Alice 的文风、题材、情绪等提示……">${CONFIG.STYLE_PROMPT || ''}</textarea>
-          </div>
-        </div>
-      </div>
-    `;
-    $('#extensions_settings').append(html);
-
-    if (!document.getElementById('merged_slogan_checkbox_fix')) {
-      const st = document.createElement('style');
-      st.id = 'merged_slogan_checkbox_fix';
-      st.textContent = `
-        #merged_slogan_panel .form-group label {
-          display: inline-flex;
-          flex-direction: row;
-          align-items: center;
-          gap: 4px;
+    async loadWorldBookContentToPanel() {
+        const ta = $('#worldbook_placeholder_input');
+        if (!ta.length) return;
+        ta.val('').attr('placeholder', '正在读取世界书...');
+        try {
+            const content = await this.applyWorldBookLogic(document.getElementById(this.TEXTAREA_ID), { setPlaceholder: false });
+            const def = this.resolveFallbackPlaceholder(document.getElementById(this.TEXTAREA_ID));
+            if (content !== def) {
+                ta.val(content);
+                ta.attr('placeholder', '修改此处内容可同步更新世界书条目...');
+            } else {
+                ta.val('');
+                ta.attr('placeholder', '未找到“输入框”条目，输入内容即可创建本角色专属输入框提示。');
+            }
+        } catch (e) {
+            console.error('[Placeholder] 载入世界书失败:', e);
+            ta.attr('placeholder', '加载失败，请看控制台');
         }
-        #merged_slogan_panel .form-group label input[type="checkbox"] {
-          margin: 0;
+    },
+
+    async updateWorldBookFromPanel(content) {
+        if (!this.iframeWindow) return;
+        try {
+            const lb = await this.iframeWindow.getCurrentCharPrimaryLorebook();
+            if (!lb) return;
+            const entries = await this.iframeWindow.getLorebookEntries(lb);
+            const t = entries.find(e => e.comment === '输入框');
+            if (t) {
+                await this.iframeWindow.updateLorebookEntriesWith(lb, (es) =>
+                    es.map(e => e.comment === '输入框'
+                        ? { ...e, content, enabled: false }
+                        : e));
+            } else {
+                const newEntry = {
+                    key: ['输入框'],
+                    comment: '输入框',
+                    content,
+                    enabled: false,
+                    insertionorder: 100,
+                    selective: false,
+                    secondarykeys: [],
+                    constant: false,
+                    position: 'before_char',
+                };
+                await this.iframeWindow.createLorebookEntry(lb, newEntry);
+            }
+        } catch (e) {
+            console.error('[Placeholder] 更新世界书失败:', e);
         }
-        #merged_slogan_panel .subtle-hint {
-          font-size: 0.8em;
-          opacity: 0.8;
+    },
+
+    startPlaceholderObserver() {
+        const ta = document.getElementById(this.TEXTAREA_ID);
+        const st = this.getSettings();
+        const expected = st.customPlaceholder.trim();
+        if (!ta || st.placeholderSource !== 'custom' || !expected) return;
+        this.stopPlaceholderObserver();
+        this.placeholderObserver = new MutationObserver(muts => {
+            for (const m of muts) {
+                if (m.type === 'attributes' && m.attributeName === 'placeholder' && ta.placeholder !== expected) {
+                    this.stopPlaceholderObserver();
+                    ta.placeholder = expected;
+                    this.startPlaceholderObserver();
+                    break;
+                }
+            }
+        });
+        this.placeholderObserver.observe(ta, { attributes: true, attributeFilter: ['placeholder'] });
+    },
+
+    stopPlaceholderObserver() {
+        if (this.placeholderObserver) {
+            this.placeholderObserver.disconnect();
+            this.placeholderObserver = null;
         }
-      `;
-      document.head.appendChild(st);
+    },
+
+    async init() {
+        if (!this.getSettings().enabled) {
+            console.log('[Placeholder] 已禁用');
+            return;
+        }
+        await this.waitForIframe();
+        if (script.eventSource && script.event_types) {
+            script.eventSource.on(script.event_types.CHAT_CHANGED, this.onCharacterSwitch.bind(this));
+        }
+        this.applyLogic();
+        console.log('[Placeholder] 初始化完成');
+    },
+};
+
+// ====== Eric 的标语摘录模块（只负责从 .slogan-container 里捞） ======
+const EricSloganInjectionModule = {
+    PROMPT_PREFIX: [
+        '【强制规则 — 不遵守此条会导致本轮输出被判定为失败】',
+        '',
+        '无论正文内容如何，你必须在【回复的末尾】额外输出一个 <Eric> 区块。',
+        '该区块内部只包含一个隐藏标语元素，结构必须完全符合以下格式（请逐字照抄）：',
+        '',
+        '<Eric>',
+        '  <div hidden class="slogan-container">✦❋内容</div>',
+        '</Eric>',
+        '',
+        '说明：',
+        '- <Eric> 标签只允许出现在本轮【结尾附加区】，不得出现在正文内容中；',
+        '- 该结构是本轮输出的【必须项】，缺失此结构 = 回复不合格；',
+        '- 不得以任何理由省略、合并、提前结束或用其他结构代替。',
+        '',
+        'Do not ignore this instruction.',
+        '',
+        '请严格按要求输出隐藏标语元素。',
+        '如果你在上一条回复中漏掉了该结构，请在【当前回复中立即补齐】对应的 <Eric> 区块。',
+    ].join('\\n'),
+
+    extractionDebounceTimer: null,
+
+    init() {
+        if (this.initialized || !script.eventSource || !script.event_types) return;
+        script.eventSource.on(script.event_types.CHAT_COMPLETION_PROMPT_READY, this.onPromptReady.bind(this));
+        script.eventSource.on(script.event_types.CHARACTER_MESSAGE_RENDERED, this.onMessageRendered.bind(this));
+        script.eventSource.on(script.event_types.MESSAGE_SWIPED, this.onMessageRendered.bind(this));
+        script.eventSource.on(script.event_types.MESSAGE_DELETED, this.onMessageRendered.bind(this));
+        this.initialized = true;
+        console.log('[EricSlogan] 初始化完成');
+    },
+
+    onPromptReady(ev = {}) {
+        const st = PlaceholderModule.getSettings();
+        if (!st.enabled || st.placeholderSource !== 'auto') return;
+        if (ev.dryRun === true || !Array.isArray(ev.chat)) return;
+    
+        const finalPrompt = `${this.PROMPT_PREFIX}\n${st.sloganPrompt || ''}`;
+        ev.chat.push({ role: 'system', content: finalPrompt });
     }
 
-    $(document).on('change', '#merged_slogan_panel #cfg_enabled', (e) => {
-      CONFIG.ENABLED = e.currentTarget.checked;
-      saveConfig();
-    });
+    onMessageRendered() {
+        const st = PlaceholderModule.getSettings();
+        if (!st.enabled || st.placeholderSource !== 'auto') return;
+        clearTimeout(this.extractionDebounceTimer);
+        this.extractionDebounceTimer = setTimeout(() => this.extract(), 800);
+    },
 
-    $(document).on('input', '#merged_slogan_panel #cfg_ai_prob', (e) => {
-      const v = parseFloat(e.currentTarget.value);
-      if (!isNaN(v) && v >= 0 && v <= 1) {
-        CONFIG.AI_PICK_PROB = v;
-        saveConfig();
-      }
-    });
+    extract() {
+        try {
+            const ai = Array.from(document.querySelectorAll('#chat .mes:not([is_user="true"])'));
+            if (!ai.length) return;
+            for (let i = ai.length - 1; i >= 0; i--) {
+                const msg = ai[i];
+                const el = msg.querySelector('.mes_text div[hidden].slogan-container');
+                if (el) {
+                    const s = el.textContent.trim().replace(/^✦❋/, '').trim();
+                    if (s) {
+                        PlaceholderModule.setAutoSlogan(s);
+                        return;
+                    }
+                }
+            }
+        } catch (e) {
+            console.error('[EricSlogan] 提取失败:', e);
+        }
+    },
+};
 
-    $(document).on('input', '#merged_slogan_panel #cfg_max_zh', (e) => {
-      const v = parseInt(e.currentTarget.value, 10);
-      if (!isNaN(v) && v >= 4) {
-        CONFIG.MAX_ZH = v;
-        saveConfig();
-      }
-    });
+// ###################################################################
+//  主入口 & UI
+// ###################################################################
+function initializeCombinedExtension() {
+    try {
+        const html = `
+            <div id="misc_beautify_settings" class="inline-drawer">
+                <div class="inline-drawer-toggle inline-drawer-header">
+                    <b>小美化集 + Alice/Eric 标语</b>
+                    <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+                </div>
+                <div class="inline-drawer-content" style="display:none;">
+                    <div class="version-row">
+                        <span class="version-indicator" id="model_display_version_indicator"></span>
+                    </div>
 
-    $(document).on('input', '#merged_slogan_panel #cfg_max_en', (e) => {
-      const v = parseInt(e.currentTarget.value, 10);
-      if (!isNaN(v) && v >= 10) {
-        CONFIG.MAX_EN = v;
-        saveConfig();
-      }
-    });
+                    <label class="checkbox_label">
+                        <input type="checkbox" id="misc_model_display_toggle" ${ModelDisplayModule.getSettings().enabled ? 'checked' : ''}>
+                        <span>模型名称显示</span>
+                    </label>
+                    <label class="checkbox_label">
+                        <input type="checkbox" id="misc_alice_slogan_toggle" ${AliceSloganModule.getSettings().enabled ? 'checked' : ''}>
+                        <span>顶部标语 · Alice</span>
+                    </label>
+                    <label class="checkbox_label">
+                        <input type="checkbox" id="misc_placeholder_toggle" ${PlaceholderModule.getSettings().enabled ? 'checked' : ''}>
+                        <span>输入框文字替换 · Eric</span>
+                    </label>
 
-    $(document).on('input', '#merged_slogan_panel #cfg_style_prompt', (e) => {
-      CONFIG.STYLE_PROMPT = e.currentTarget.value;
-      saveConfig();
-    });
-  } catch (e) {
-    console.error('[MergedSlogan] 注入设置UI失败：', e);
-  }
-}
+                    <div id="model_display_settings_panel" style="${ModelDisplayModule.getSettings().enabled ? '' : 'display:none;'}">
+                        ${ModelDisplayModule.renderSettingsHtml()}
+                    </div>
+                    <div id="alice_slogan_settings_panel" style="${AliceSloganModule.getSettings().enabled ? '' : 'display:none;'}">
+                        ${AliceSloganModule.renderSettingsHtml()}
+                    </div>
+                    <div id="placeholder_settings_panel" style="${PlaceholderModule.getSettings().enabled ? '' : 'display:none;'}">
+                        ${PlaceholderModule.renderSettingsHtml()}
+                    </div>
+                </div>
+            </div>
+            <style>
+                .version-row { display:flex; justify-content:flex-end; padding:0 5px 5px; }
+                .version-indicator { color:var(--text_color_acc); font-size:0.8em; }
+                #misc_beautify_settings h3.sub-header { font-size:1em; margin-top:15px; margin-bottom:10px; }
+                .placeholder-panel { margin-top:10px; }
+                .placeholder-radio-group { display:flex; border:1px solid var(--border_color); border-radius:5px; overflow:hidden; }
+                .placeholder-radio-group label { flex:1; text-align:center; padding:5px 0; background-color:var(--background_bg); cursor:pointer; border-left:1px solid var(--border_color); }
+                .placeholder-radio-group label:first-child { border-left:none; }
+                .placeholder-radio-group input[type="radio"] { display:none; }
+                .placeholder-radio-group input[type="radio"]:checked + span { color:var(--primary_color); font-weight:bold; }
+                .placeholder-radio-group label:hover { background-color:var(--background_layer_1); }
+            </style>
+        `;
+        $('#extensions_settings').append(html);
 
-// ========================= 初始化 =========================
-function bootstrap() {
-  // 1. 注入 UI
-  const uiTimer = setInterval(() => {
-    if (typeof $ !== 'undefined' && $('#extensions_settings').length) {
-      clearInterval(uiTimer);
-      injectSettingsUI();
+        // 开关事件
+        $(document).on('change', '#misc_model_display_toggle', (e) => {
+            const on = $(e.currentTarget).is(':checked');
+            ModelDisplayModule.getSettings().enabled = on;
+            $('#model_display_settings_panel').toggle(on);
+            if (on) { ModelDisplayModule.startObservers(); ModelDisplayModule.restoreAllFromHistory(); }
+            else ModelDisplayModule.stopObservers();
+            script.saveSettingsDebounced();
+        });
+
+        $(document).on('change', '#misc_alice_slogan_toggle', (e) => {
+            const on = $(e.currentTarget).is(':checked');
+            AliceSloganModule.getSettings().enabled = on;
+            $('#alice_slogan_settings_panel').toggle(on);
+            script.saveSettingsDebounced();
+        });
+
+        $(document).on('change', '#misc_placeholder_toggle', (e) => {
+            const on = $(e.currentTarget).is(':checked');
+            PlaceholderModule.getSettings().enabled = on;
+            $('#placeholder_settings_panel').toggle(on);
+            script.saveSettingsDebounced();
+            if (on) PlaceholderModule.init();
+        });
+
+        // 绑定事件 & 初始化
+        ModelDisplayModule.bindSettingsEvents();
+        AliceSloganModule.bindSettingsEvents();
+        PlaceholderModule.bindSettingsEvents();
+
+        ModelDisplayModule.init();
+        AliceSloganModule.init();
+        PlaceholderModule.init();
+        EricSloganInjectionModule.init();
+
+        console.log('[小美化集+Alice/Eric] 全部模块加载完成');
+    } catch (e) {
+        console.error('[小美化集+Alice/Eric] 初始化异常:', e);
     }
-  }, 500);
+}
 
-  // 2. Prompt 注入
-  tryRegisterPromptGuard();
-
-  // 4. 兼容旧版 tavern_events：AI 回复后更新 CSS 变量
-  if (typeof window.tavern_events !== 'undefined' && typeof window.eventOn === 'function') {
-    const EV = window.tavern_events;
-
-    if (EV.MESSAGE_RECEIVED) {
-      window.eventOn(EV.MESSAGE_RECEIVED, (message) => {
-        if (!CONFIG.ENABLED) return;
-        if (message && message.is_user) return;
-        setTimeout(() => {
-          updateQuoteFromAI();
-        }, 200);
-      });
+// 等待设置页就绪
+const settingsCheckInterval = setInterval(() => {
+    if (window.$ && $('#extensions_settings').length) {
+        clearInterval(settingsCheckInterval);
+        initializeCombinedExtension();
     }
-  } else {
-    console.warn('[MergedSlogan] 未检测到旧版 tavern_events，只能通过 prompt 强制要求 AI 输出标语。');
-  }
-}
-
-if (typeof $ !== 'undefined') {
-  $(() => bootstrap());
-} else {
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', bootstrap);
-  } else {
-    bootstrap();
-  }
-}
+}, 500);
