@@ -15,13 +15,13 @@ let lastSpeed = null;
     CSS_VAR_NAME: '--自定义文案',
     CHANGE_ON_AI_REPLY: true,
     AI_PICK_PROB: 0.6,
-    REQUIRE_AI_VERBATIM: true,
+    REQUIRE_AI_VERBATIM: true, // true: 只要原句；false: 允许按风格编造
     CONTEXT_AWARE: true,
     CONTEXT_WINDOW: 6,
     LIB_SAMPLE_SIZE: 18,
     MAX_ZH: 15,
     MAX_EN: 80,
-    LOG: true,
+    STYLE_HINT: '', // 外部注入的风格 / 语气要求
   });
 
   const DEFAULT_SCROLLER_CFG = Object.freeze({
@@ -54,15 +54,15 @@ let lastSpeed = null;
 
   function saveConfig() {
     script.saveSettingsDebounced();
-    if (CONFIG.LOG) console.log('[MergedSlogan] config saved:', ROOT_CFG);
+    console.log('[MergedSlogan] config saved:', ROOT_CFG);
   }
 
   // ========================= 文案语料库 =========================
   const BASE_QUOTES = [
-    "浅水是喧哗的，深水是沉默的。"
+    '浅水是喧哗的，深水是沉默的。',
   ];
 
-  if (CONFIG.LOG) console.log('[MergedSlogan] config loaded:', ROOT_CFG);
+  console.log('[MergedSlogan] config loaded:', ROOT_CFG);
 
   // ========================= 通用工具 =========================
   function flattenLib(obj) {
@@ -91,7 +91,7 @@ let lastSpeed = null;
     const external = getExternalQuotes();
     const base = external && external.length ? external : BASE_QUOTES;
     const cleaned = Array.from(new Set(base.map(s => String(s || '').trim()).filter(Boolean)));
-    return cleaned.length ? cleaned : ["故事的开头，总是极具温柔。"];
+    return cleaned.length ? cleaned : ['故事的开头，总是极具温柔。'];
   }
 
   function pickRandom(arr) {
@@ -147,15 +147,36 @@ let lastSpeed = null;
     return copy.slice(0, Math.min(size, copy.length));
   }
 
-  // ========================= 系统提示（原句隐藏标语） =========================
+  // ========================= 系统提示（隐藏标语） =========================
   function makePrompt(contextText, sampledLib, recent) {
-    return [
-      '严格遵循以下要求，在本次回复正文的末尾追加且仅追加一个隐藏HTML元素：',
-      '<div hidden class="slogan-container" data-verbatim="1">✦❋原句</div>',
-      '说明：',
-      '1) 不得捏造名言或文学句子，只能使用真实存在的“原句”（可不在候选库内）。',
-      '2) 若无法100%确认是原句，请不要输出该隐藏元素（客户端将回退内置语料库）。',
-      '3) 只输出隐藏元素，不要添加任何其他文本或标签。',
+    const template = CONFIG.REQUIRE_AI_VERBATIM
+      ? '<div hidden class="slogan-container" data-verbatim="1">✦❋内容</div>'
+      : '<div hidden class="slogan-container">✦❋内容</div>';
+
+    const parts = [];
+
+    parts.push(
+      '请在本次回复正文的末尾，额外输出且仅输出一个隐藏的HTML元素，格式为：',
+      template
+    );
+
+    if (CONFIG.REQUIRE_AI_VERBATIM) {
+      parts.push(
+        '要求：',
+        '1) 仅在你确信“内容”为真实存在的原句（可来自文学作品、台词、语录等）时才输出该元素；',
+        '2) 若无法100%确认其真实性，请完全省略该隐藏元素（不要输出任何 <div>）；',
+        '3) 不要在该元素前后添加其他文本或标签。'
+      );
+    } else {
+      parts.push(
+        '要求：',
+        '1) 内容可以是你根据当前剧情与风格自由创作的短句；',
+        '2) 语气需自然贴合上下文；',
+        '3) 不要在该元素前后添加其他文本或标签。'
+      );
+    }
+
+    parts.push(
       '',
       '【上下文（截断）】',
       contextText || '(无)',
@@ -166,9 +187,15 @@ let lastSpeed = null;
       '【最近已用（需去重/避免近义复述）】',
       JSON.stringify(recent || [], null, 0),
       '',
-      `【长度限制】中文 ≤ ${CONFIG.MAX_ZH} 字；英文 ≤ ${CONFIG.MAX_EN} 字符。`,
-      '【风格参考】张爱玲 / 毛姆 / 王小波 / 马尔克斯 / 川端康成 / 王家卫 / 博尔赫斯；优先贴合当前剧情情绪与语境。'
-    ].join('\n');
+      `【长度限制】中文 ≤ ${CONFIG.MAX_ZH} 字；英文 ≤ ${CONFIG.MAX_EN} 字符。`
+    );
+
+    const styleHint = (CONFIG.STYLE_HINT || '').trim();
+    if (styleHint) {
+      parts.push('', '【风格 / 语气要求】', styleHint);
+    }
+
+    return parts.join('\n');
   }
 
   function tryRegisterPromptGuard() {
@@ -187,10 +214,10 @@ let lastSpeed = null;
         const prompt = makePrompt(ctx, lib, recent);
 
         eventData.chat.push({ role: 'system', content: prompt });
-        if (CONFIG.LOG) console.log('[合并文案] 已注入上下文原句提示（若模型支持）。');
+        console.log('[MergedSlogan] 已注入上下文标语提示（若模型支持）。');
       });
     } catch (e) {
-      // 忽略
+      console.error('[MergedSlogan] 注册 Prompt Guard 出错：', e);
     }
   }
 
@@ -209,7 +236,8 @@ let lastSpeed = null;
         if (text) return text;
       }
       return '';
-    } catch {
+    } catch (e) {
+      console.error('[MergedSlogan] 提取 AI 标语失败：', e);
       return '';
     }
   }
@@ -223,8 +251,8 @@ let lastSpeed = null;
       document.documentElement.style.setProperty(CONFIG.CSS_VAR_NAME, `"${text}"`);
     }
     __lastSelected = text;
-    if (CONFIG.LOG) console.log(`[合并文案] 顶部文案更新：${text}`);
-    // 每次更新文案时，通知滚动模块重新测量
+    console.log('[MergedSlogan] 顶部文案更新：', text);
+
     if (typeof window.__sloganScrollerUpdate === 'function') {
       window.__sloganScrollerUpdate();
     }
@@ -266,37 +294,38 @@ let lastSpeed = null;
             <label><input type="checkbox" id="cfg_change_on_ai" ${CONFIG.CHANGE_ON_AI_REPLY ? 'checked' : ''}> AI 回复后更换</label>
           </div>
           <div class="form-group">
-            <label><input type="checkbox" id="cfg_context_aware" ${CONFIG.CONTEXT_AWARE ? 'checked' : ''}> 注入上下文（更贴合剧情）</label>
+            <label><input type="checkbox" id="cfg_context_aware" ${CONFIG.CONTEXT_AWARE ? 'checked' : ''}> 注入上下文</label>
           </div>
           <div class="form-group">
-            <label><input type="checkbox" id="cfg_require_verbatim" ${CONFIG.REQUIRE_AI_VERBATIM ? 'checked' : ''}> 仅接受 data-verbatim="1"</label>
+            <label><input type="checkbox" id="cfg_require_verbatim" ${CONFIG.REQUIRE_AI_VERBATIM ? 'checked' : ''}> 真实摘录（只要原句）</label>
           </div>
           <div class="form-group">
-            <label><input type="checkbox" id="cfg_log" ${CONFIG.LOG ? 'checked' : ''}> 控制台输出日志</label>
-          </div>
-          <div class="form-group">
-            <label>AI 采纳概率（0~1）：<input type="number" step="0.05" min="0" max="1" id="cfg_ai_prob" value="${CONFIG.AI_PICK_PROB}" class="text_pole" style="width:80px;"></label>
+            <label>AI 采纳率（0~1）：<input type="number" step="0.05" min="0" max="1" id="cfg_ai_prob" value="${CONFIG.AI_PICK_PROB}" class="text_pole" style="width:80px;"></label>
           </div>
           <div class="form-group">
             <label>上下文窗口（条）：<input type="number" min="1" max="20" id="cfg_ctx_window" value="${CONFIG.CONTEXT_WINDOW}" class="text_pole" style="width:80px;"></label>
           </div>
           <div class="form-group">
-            <label>库抽样条数：<input type="number" min="6" max="60" id="cfg_lib_sample" value="${CONFIG.LIB_SAMPLE_SIZE}" class="text_pole" style="width:80px;"></label>
+            <label>库抽样（条）：<input type="number" min="6" max="60" id="cfg_lib_sample" value="${CONFIG.LIB_SAMPLE_SIZE}" class="text_pole" style="width:80px;"></label>
           </div>
           <div class="form-group">
             <label>中文最长：<input type="number" min="4" max="30" id="cfg_max_zh" value="${CONFIG.MAX_ZH}" class="text_pole" style="width:80px;"></label>
-            <label>英文最长：<input type="number" min="10" max="160" id="cfg_max_en" value="${CONFIG.MAX_EN}" class="text_pole" style="width:80px;"></label>
+            <label>英文最长：<input type="number" min="10" max="160" id="cfg_max_en" value="${CONFIG.MAX_EN}" class="text_pole" style="width:80px; margin-left:8px;"></label>
+          </div>
+          <div class="form-group">
+            <label>AI 风格 / 语气要求：</label>
+            <textarea id="cfg_style_hint" rows="3" class="text_pole" style="width:100%;">${CONFIG.STYLE_HINT || ''}</textarea>
           </div>
         </div>
       </div>
       <style>
         #merged_slogan_panel .form-group{margin:6px 0;}
         #merged_slogan_panel input.text_pole{padding:2px 6px;}
+        #merged_slogan_panel textarea.text_pole{padding:4px 6px; resize: vertical;}
       </style>
       `;
       $('#extensions_settings').append(html);
 
-      // 顶部文案配置事件
       $(document).on('change', '#merged_slogan_panel #cfg_change_on_ai', (e) => {
         CONFIG.CHANGE_ON_AI_REPLY = e.currentTarget.checked;
         saveConfig();
@@ -307,10 +336,6 @@ let lastSpeed = null;
       });
       $(document).on('change', '#merged_slogan_panel #cfg_require_verbatim', (e) => {
         CONFIG.REQUIRE_AI_VERBATIM = e.currentTarget.checked;
-        saveConfig();
-      });
-      $(document).on('change', '#merged_slogan_panel #cfg_log', (e) => {
-        CONFIG.LOG = e.currentTarget.checked;
         saveConfig();
       });
       $(document).on('input', '#merged_slogan_panel #cfg_ai_prob', (e) => {
@@ -348,8 +373,12 @@ let lastSpeed = null;
           saveConfig();
         }
       });
+      $(document).on('input', '#merged_slogan_panel #cfg_style_hint', (e) => {
+        CONFIG.STYLE_HINT = e.currentTarget.value;
+        saveConfig();
+      });
     } catch (e) {
-      // 忽略
+      console.error('[MergedSlogan] 注入设置 UI 出错：', e);
     }
   }
 
@@ -375,6 +404,7 @@ let lastSpeed = null;
     return w;
   }
 
+  // 视窗内有头像时，取「最下面那条」作为滚动目标；视窗内没有就不滚
   function getActiveWrapper() {
     const wrappers = document.querySelectorAll('#chat .mes .mesAvatarWrapper');
     if (!wrappers.length) return null;
@@ -386,16 +416,13 @@ let lastSpeed = null;
 
     wrappers.forEach(w => {
       const rect = w.getBoundingClientRect();
-      // 完全在视窗上方或下方的都丢掉
       if (rect.bottom <= 0 || rect.top >= vh) return;
-
       if (rect.bottom > bestBottom) {
         bestBottom = rect.bottom;
         best = w;
       }
     });
 
-    // 视窗里有就选最下面那条，没有就返回 null（不滚任何标语）
     return best || null;
   }
 
@@ -422,7 +449,10 @@ let lastSpeed = null;
     }
 
     const wrapper = getActiveWrapper();
-    if (!wrapper) return;
+    if (!wrapper) {
+      clearAllScrollExcept(null);
+      return;
+    }
 
     clearAllScrollExcept(wrapper);
 
@@ -444,7 +474,6 @@ let lastSpeed = null;
       const boxWidth = wrapper.getBoundingClientRect().width;
       const needScroll = SCFG.enabled && textWidth > boxWidth;
 
-      // 记录这次状态
       const changed =
         wrapper !== lastWrapper ||
         currentSlogan !== lastText ||
@@ -462,16 +491,14 @@ let lastSpeed = null;
         return;
       }
 
-      // 同一条文案 + 同一个 wrapper + 同样速度，就不要反复重启动画
       if (!changed && wrapper.classList.contains('slogan-scroll')) {
         return;
       }
 
       wrapper.classList.remove('slogan-scroll');
-      void wrapper.offsetWidth; // 触发 reflow
+      void wrapper.offsetWidth;
       wrapper.style.animationDuration = `${SCFG.speedSec}s`;
       wrapper.classList.add('slogan-scroll');
-
     };
 
     if (SCFG.enabled) {
@@ -486,7 +513,6 @@ let lastSpeed = null;
     }
   }
 
-  // 暴露给上面 writeCssQuote 调用
   window.__sloganScrollerUpdate = updateSloganScrollImmediate;
 
   let scrollTimer = null;
@@ -589,7 +615,6 @@ let lastSpeed = null;
 
   // ========================= 总初始化 =========================
   function bootstrap() {
-    // 1. 等扩展设置面板出来 → 注入 UI（文案 + 滚动）
     const uiTimer = setInterval(() => {
       if (typeof $ !== 'undefined' && $('#extensions_settings').length) {
         clearInterval(uiTimer);
@@ -598,7 +623,6 @@ let lastSpeed = null;
       }
     }, 500);
 
-    // 2. SillyTavern 事件：文案部分
     if (typeof window.tavern_events !== 'undefined' && typeof window.eventOn === 'function') {
       const EV = window.tavern_events;
 
@@ -607,7 +631,7 @@ let lastSpeed = null;
       setQuoteFromLibraryOnly();
 
       window.eventOn(EV.CHAT_CHANGED, () => {
-        if (CONFIG.LOG) console.log('[合并文案] CHAT_CHANGED → 库抽取');
+        console.log('[MergedSlogan] CHAT_CHANGED → 库抽取');
         setQuoteFromLibraryOnly();
       });
 
@@ -621,10 +645,9 @@ let lastSpeed = null;
       }
     } else {
       setQuoteFromLibraryOnly();
-      if (CONFIG.LOG) console.warn('[合并文案] 未检测到 SillyTavern 事件，已做降级初始化。');
+      console.warn('[MergedSlogan] 未检测到 SillyTavern 事件，已做降级初始化。');
     }
 
-    // 3. 标语滚动核心
     initScrollerCore();
   }
 
