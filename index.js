@@ -216,26 +216,47 @@ let lastSpeed = null;
 
   function tryRegisterPromptGuard() {
     try {
-      if (!window.tavern_events || !window.eventOn) return;
-      const EV = window.tavern_events;
-      if (!EV.CHAT_COMPLETION_PROMPT_READY) return;
+      const ctxWindow = CONFIG.CONTEXT_WINDOW;
+      const libSize = CONFIG.LIB_SAMPLE_SIZE;
 
-      window.eventOn(EV.CHAT_COMPLETION_PROMPT_READY, (eventData) => {
-        if (!CONFIG.CONTEXT_AWARE) return;
-        if (!eventData || !Array.isArray(eventData.chat)) return;
+      // 封装真正的注入逻辑，两个事件源共用
+      const attach = (onFn, ev) => {
+        if (!ev.CHAT_COMPLETION_PROMPT_READY) return;
+        onFn(ev.CHAT_COMPLETION_PROMPT_READY, (eventData = {}) => {
+          if (!CONFIG.CONTEXT_AWARE) return;
+          if (eventData.dryRun === true) return;
+          if (!eventData || !Array.isArray(eventData.chat)) return;
 
-        const ctx = collectContext(CONFIG.CONTEXT_WINDOW);
-        const lib = buildLibrarySample(CONFIG.LIB_SAMPLE_SIZE);
-        const recent = collectRecentSlogans(6);
-        const prompt = makePrompt(ctx, lib, recent);
+          const ctx = collectContext(ctxWindow);
+          const lib = buildLibrarySample(libSize);
+          const recent = collectRecentSlogans(6);
+          const style = CONFIG.AI_STYLE_PROMPT || ''; // 如果你前面加了一个风格文本框，就从这里读
+          const prompt = makePrompt(ctx, lib, recent, style);
 
-        eventData.chat.push({ role: 'system', content: prompt });
-        console.log('[MergedSlogan] 已注入标语提示（若模型支持）。');
-      });
+          eventData.chat.push({ role: 'system', content: prompt });
+          console.log('[MergedSlogan] 已注入 AI 标语提示（eventSource / tavern_events）');
+        });
+      };
+
+      // ① 新 API：script.eventSource
+      if (script && script.eventSource && script.event_types) {
+        attach(script.eventSource.on.bind(script.eventSource), script.event_types);
+        return;
+      }
+
+      // ② 旧 API：window.tavern_events
+      if (window.tavern_events && typeof window.eventOn === 'function') {
+        attach(window.eventOn, window.tavern_events);
+        return;
+      }
+
+      console.warn('[MergedSlogan] 未找到可用事件总线，无法注入 AI 提示。');
+
     } catch (e) {
-      console.warn('[MergedSlogan] 注册 CHAT_COMPLETION_PROMPT_READY 失败：', e);
+      console.error('[MergedSlogan] 注册提示事件失败：', e);
     }
   }
+
 
   // ========================= 读取 AI 标语（隐藏 div + [SLOGAN] Fallback） =========================
   function getLatestAISloganVerbatim() {
@@ -674,15 +695,50 @@ let lastSpeed = null;
       }
     }, 500);
 
-    if (typeof window.tavern_events !== 'undefined' && typeof window.eventOn === 'function') {
+    // 2. 事件：文案部分（优先使用 script.eventSource，其次 tavern_events）
+    let hooked = false;
+
+    // 2.1 先注册「提示词注入」
+    tryRegisterPromptGuard();
+
+    // 2.2 默认先抽一条库里的，避免空白
+    setQuoteFromLibraryOnly();
+
+    // 2.3 新事件总线：script.eventSource（推荐）
+    if (script && script.eventSource && script.event_types) {
+      const EV = script.event_types;
+
+      // 角色 / 会话切换：重置为库里的句子
+      if (EV.CHAT_CHANGED) {
+        script.eventSource.on(EV.CHAT_CHANGED, () => {
+          console.log('[MergedSlogan] CHAT_CHANGED → 重新抽库');
+          setQuoteFromLibraryOnly();
+        });
+      }
+
+      // AI 楼层渲染完：按「AI采纳概率」决定用 AI 还是库
+      if (EV.CHARACTER_MESSAGE_RENDERED) {
+        script.eventSource.on(EV.CHARACTER_MESSAGE_RENDERED, (payload = {}) => {
+          const mes = payload.mes || payload.message || {};
+          if (mes.is_user) return;
+          setTimeout(() => {
+            if (CONFIG.CHANGE_ON_AI_REPLY) {
+              setQuoteFromAIOrLibrary();
+            }
+          }, 200);
+        });
+      }
+
+      hooked = true;
+      console.log('[MergedSlogan] 已通过 script.eventSource 挂载事件。');
+    }
+
+    // 2.4 旧事件总线：tavern_events（兼容旧版）
+    if (!hooked && window.tavern_events && typeof window.eventOn === 'function') {
       const EV = window.tavern_events;
 
-      tryRegisterPromptGuard();
-
-      setQuoteFromLibraryOnly();
-
       window.eventOn(EV.CHAT_CHANGED, () => {
-        console.log('[MergedSlogan] CHAT_CHANGED → 从语料库抽取');
+        console.log('[MergedSlogan] CHAT_CHANGED (legacy) → 重新抽库');
         setQuoteFromLibraryOnly();
       });
 
@@ -690,14 +746,21 @@ let lastSpeed = null;
         window.eventOn(EV.MESSAGE_RECEIVED, (message) => {
           if (message && message.is_user) return;
           setTimeout(() => {
-            if (CONFIG.CHANGE_ON_AI_REPLY) setQuoteFromAIOrLibrary();
+            if (CONFIG.CHANGE_ON_AI_REPLY) {
+              setQuoteFromAIOrLibrary();
+            }
           }, 200);
         });
       }
-    } else {
-      setQuoteFromLibraryOnly();
-      console.warn('[MergedSlogan] 未检测到 SillyTavern 事件，已做降级初始化。');
+
+      hooked = true;
+      console.log('[MergedSlogan] 已通过 tavern_events 挂载事件（兼容模式）。');
     }
+
+    if (!hooked) {
+      console.warn('[MergedSlogan] 未检测到可用事件总线，将只使用本地语料库。');
+    }
+
 
     initScrollerCore();
   }
