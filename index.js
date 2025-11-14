@@ -498,13 +498,13 @@ let lastSpeed = null;
             <label><input type="checkbox" id="cfg_change_on_ai" ${CONFIG.CHANGE_ON_AI_REPLY ? 'checked' : ''}> AI 回复后更换</label>
           </div>
           <div class="form-group">
-            <label><input type="checkbox" id="cfg_context_aware" ${CONFIG.CONTEXT_AWARE ? 'checked' : ''}> 注入上下文（让模型顺便想一句标语）</label>
+            <label><input type="checkbox" id="cfg_context_aware" ${CONFIG.CONTEXT_AWARE ? 'checked' : ''}> 注入上下文</label>
           </div>
           <div class="form-group">
-            <label><input type="checkbox" id="cfg_require_verbatim" ${CONFIG.REQUIRE_AI_VERBATIM ? 'checked' : ''}> 仅接受 data-verbatim="1"（真实摘录）</label>
+            <label><input type="checkbox" id="cfg_require_verbatim" ${CONFIG.REQUIRE_AI_VERBATIM ? 'checked' : ''}> 仅接受真实摘录</label>
           </div>
           <div class="form-group">
-            <label><input type="checkbox" id="cfg_ai_only" ${CONFIG.AI_ONLY ? 'checked' : ''}> 仅使用 AI 生成（禁用语料库）</label>
+            <label><input type="checkbox" id="cfg_ai_only" ${CONFIG.AI_ONLY ? 'checked' : ''}> 仅 AI 生成（禁用语料库）</label>
           </div>
           <div class="form-group">
             <label>AI 采纳概率 (0~1)：<input type="number" step="0.05" min="0" max="1" id="cfg_ai_prob" value="${CONFIG.AI_PICK_PROB}" class="text_pole" style="width:80px;"></label>
@@ -517,8 +517,8 @@ let lastSpeed = null;
             <label>英文最长：<input type="number" min="10" max="300" id="cfg_max_en" value="${CONFIG.MAX_EN}" class="text_pole" style="width:80px; margin-left:6px;"></label>
           </div>
           <div class="form-group">
-            <label>标语风格提示（可选，将直接注入给模型）</label>
-            <textarea id="cfg_style_prompt" class="text_pole" rows="4" placeholder="例如：文艺忧郁、贴合当前章节情绪，不要玩梗或搞笑……">${CONFIG.STYLE_PROMPT || ''}</textarea>
+            <label>风格提示</label>
+            <textarea id="cfg_style_prompt" class="text_pole" rows="4" placeholder="例如：文艺忧郁、贴合当前章节情绪……">${CONFIG.STYLE_PROMPT || ''}</textarea>
           </div>
         </div>
       </div>
@@ -619,7 +619,7 @@ let lastSpeed = null;
   
     wrappers.forEach(w => {
       const rect = w.getBoundingClientRect();
-      // 和聊天区域没交集的直接略过
+      // 跟聊天区域没有交集的直接略过
       if (rect.bottom <= chatRect.top || rect.top >= chatRect.bottom) return;
   
       if (rect.bottom > bestBottom) {
@@ -628,7 +628,6 @@ let lastSpeed = null;
       }
     });
   
-    // 有就返回当前视窗里“最靠下”的那一条，没有就 null
     return best || null;
   }
 
@@ -646,13 +645,17 @@ let lastSpeed = null;
   let applyTimer = null;
 
   function updateSloganScrollImmediate() {
-    const slogan = getSloganFromCss();
-    if (!slogan) {
-      clearTimeout(applyTimer);
-      applyTimer = null;
+    const wrapper = getActiveWrapper();
+    if (!wrapper) {
+      // 视口里没有任何可见楼层 → 停掉所有滚动
       clearAllScrollExcept(null);
+      lastWrapper = null;
+      lastText = '';
+      lastNeedScroll = null;
       return;
     }
+
+clearAllScrollExcept(wrapper);
 
     const wrapper = getActiveWrapper();
     
@@ -812,15 +815,20 @@ let lastSpeed = null;
 
   function initScrollerCore() {
     console.log('%c[SloganScroller] Init (UI + debounced)', 'color:#4CAF50;font-weight:bold');
-
+  
     const chat = document.getElementById('chat');
     if (chat) {
+      // 新消息插入时，立刻重算一次（比如你发言或AI回复）
       const observer = new MutationObserver(() => {
         updateSloganScrollImmediate();
       });
-      observer.observe(chat, { childList: true });
+      observer.observe(chat, { childList: true, subtree: false });
+  
+      // 关键：聊天面板自身滚动时也要触发重算
+      chat.addEventListener('scroll', debounceScroll, { passive: true });
     }
-
+  
+    // 有些布局整体页面也会滚，保留 window 的监听作为兜底
     window.addEventListener('scroll', debounceScroll, { passive: true });
     window.addEventListener('resize', debounceResize);
   }
