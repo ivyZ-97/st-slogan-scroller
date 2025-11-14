@@ -604,9 +604,6 @@ const EXT_NAME = 'merged_slogan';
   }
 
   let applyTimer = null;
-  let lastWrapper = null;
-  let lastText = '';
-  let lastSpeed = null;
 
   function updateSloganScrollImmediate() {
     const slogan = getSloganFromCss();
@@ -640,25 +637,16 @@ const EXT_NAME = 'merged_slogan';
       const boxWidth = wrapper.getBoundingClientRect().width;
       const needScroll = SCFG.enabled && textWidth > boxWidth;
 
-const textChanged  = (wrapper !== lastWrapper) || (slogan !== lastText);
-const speedChanged = (SCFG.speedSec !== lastSpeed);
-
       if (needScroll) {
-          wrapper.style.setProperty('--slogan-speed', `${SCFG.speedSec}s`);
-          if (!wrapper.classList.contains('slogan-scroll') || textChanged || speedChanged) {
-              wrapper.classList.remove('slogan-scroll');
-              void wrapper.offsetWidth;
-              wrapper.classList.add('slogan-scroll');
-          }
+        // 强制重启动画
+        wrapper.classList.remove('slogan-scroll');
+        void wrapper.offsetWidth; // 触发 reflow
+        wrapper.style.animationDuration = `${SCFG.speedSec}s`;
+        wrapper.classList.add('slogan-scroll');
       } else {
-          wrapper.classList.remove('slogan-scroll');
-          wrapper.style.removeProperty('--slogan-speed');
+        wrapper.classList.remove('slogan-scroll');
+        wrapper.style.animationDuration = '';
       }
-      
-      lastWrapper = wrapper;
-      lastText    = slogan;
-      lastSpeed   = SCFG.speedSec;
-
     };
 
     if (SCFG.enabled) {
