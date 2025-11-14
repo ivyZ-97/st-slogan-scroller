@@ -371,57 +371,36 @@ let lastSpeed = null;
     ].join('\n');
   }
 
+  // 使用 SillyTavern 的新事件总线注入提示
   function tryRegisterPromptGuard() {
     try {
-      if (!window.tavern_events || !window.eventOn) {
-        console.warn('[MergedSlogan] 未检测到 SillyTavern 事件，已做降级初始化（不注入提示）。');
-        return;
-      }
-      const EV = window.tavern_events;
-      if (!EV.CHAT_COMPLETION_PROMPT_READY) {
-        console.warn('[MergedSlogan] tavern_events 中无 CHAT_COMPLETION_PROMPT_READY。');
+      // 关键：走 script.eventSource，而不是 window.tavern_events
+      if (!script.eventSource || !script.event_types || !script.event_types.CHAT_COMPLETION_PROMPT_READY) {
+        console.warn('[MergedSlogan] script.eventSource 未就绪，暂不注入提示。');
         return;
       }
 
-      window.eventOn(EV.CHAT_COMPLETION_PROMPT_READY, (eventData) => {
-        if (!CONFIG.CONTEXT_AWARE) return;
-        if (!eventData || !Array.isArray(eventData.chat)) return;
+      script.eventSource.on(
+        script.event_types.CHAT_COMPLETION_PROMPT_READY,
+        (eventData = {}) => {
+          // ST 内部有 dryRun，照抄成功案例的防御
+          if (eventData.dryRun === true || !Array.isArray(eventData.chat)) return;
+          if (!CONFIG.CONTEXT_AWARE) return;
 
-        const ctx = buildContextFromChat(eventData.chat);
-        const recent = collectRecentSlogans(6);
-        const lib = CONFIG.AI_ONLY ? [] : buildLibrarySample(CONFIG.LIB_SAMPLE_SIZE);
-        const prompt = makePrompt(ctx, lib, recent, CONFIG.STYLE_PROMPT || '');
-        
-        const chatArr = eventData.chat;
-        if (!chatArr.length) return;
-        
-        // 找到最后一条 user 消息（一般就是你这轮的输入）
-        let lastIdx = -1;
-        for (let i = chatArr.length - 1; i >= 0; i--) {
-          if (chatArr[i].role === 'user') {
-            lastIdx = i;
-            break;
-          }
-        }
-        // 如果没找到 user，就退而求其次用最后一条消息
-        if (lastIdx === -1) lastIdx = chatArr.length - 1;
-        
-        const last = chatArr[lastIdx];
-        
-        // 把提示直接拼进这条消息的 content
-        if (typeof last.content === 'string') {
-          last.content += '\n\n' + prompt;
-        } else if (Array.isArray(last.content)) {
-          // 兼容多段 content 结构
-          last.content.push({ type: 'text', text: '\n\n' + prompt });
-        } else {
-          // 实在不行再兜底加一条 user 消息
-          chatArr.push({ role: 'user', content: prompt });
-        }
-        
-        console.log('[MergedSlogan] 已把“标语生成”提示拼进最后一条 user 消息（AI_ONLY =', CONFIG.AI_ONLY, '）。');
+          const ctx = buildContextFromChat(eventData.chat);
+          const recent = collectRecentSlogans(6);
+          const lib = CONFIG.AI_ONLY ? [] : buildLibrarySample(CONFIG.LIB_SAMPLE_SIZE);
+          const prompt = makePrompt(ctx, lib, recent, CONFIG.STYLE_PROMPT || '');
 
-      });
+          // ✅ 最简单、也是官方示例的方式：追加一条 system 消息
+          eventData.chat.push({
+            role: 'system',
+            content: prompt,
+          });
+
+          console.log('[MergedSlogan] 已向 CHAT_COMPLETION_PROMPT_READY 注入标语提示（AI_ONLY =', CONFIG.AI_ONLY, '）。');
+        }
+      );
     } catch (e) {
       console.error('[MergedSlogan] 注册 CHAT_COMPLETION_PROMPT_READY 失败：', e);
     }
@@ -551,6 +530,24 @@ let lastSpeed = null;
         </div>
       `;
       $('#extensions_settings').append(html);
+      // 保证本面板里的勾选框都在文字前面显示
+      if (!document.getElementById('merged_slogan_checkbox_fix')) {
+        const st = document.createElement('style');
+        st.id = 'merged_slogan_checkbox_fix';
+        st.textContent = `
+          /* 只限定在随机文案定制面板里，避免影响别的扩展 */
+          #merged_slogan_panel .form-group label {
+            display: inline-flex;
+            flex-direction: row;     /* 一定是左→右，不要 row-reverse */
+            align-items: center;
+            gap: 4px;                /* 方框和文字之间留一点空隙 */
+          }
+          #merged_slogan_panel .form-group label input[type="checkbox"] {
+            margin: 0;
+          }
+        `;
+        document.head.appendChild(st);
+      }
 
       // 顶部文案配置事件
       $(document).on('change', '#merged_slogan_panel #cfg_change_on_ai', (e) => {
@@ -858,12 +855,15 @@ function updateSloganScrollImmediate() {
     }, 500);
 
     // 2. SillyTavern 事件：文案部分
+    // 2. SillyTavern 事件：文案部分
+    setQuoteFromLibraryOnly();  // 初始化先给个库里的句子
+
+    // 2.1 标语提示注入：走 script.eventSource 事件总线
+    tryRegisterPromptGuard();
+
+    // 2.2 如果你还想继续兼容老的 tavern_events 事件（比如 CHAT_CHANGED、MESSAGE_RECEIVED）
     if (typeof window.tavern_events !== 'undefined' && typeof window.eventOn === 'function') {
       const EV = window.tavern_events;
-
-      tryRegisterPromptGuard();
-
-      setQuoteFromLibraryOnly();
 
       window.eventOn(EV.CHAT_CHANGED, () => {
         console.log('[MergedSlogan] CHAT_CHANGED → 重新初始化文案');
@@ -879,8 +879,7 @@ function updateSloganScrollImmediate() {
         });
       }
     } else {
-      setQuoteFromLibraryOnly();
-      console.warn('[MergedSlogan] 未检测到 SillyTavern 事件，已做降级初始化。');
+      console.warn('[MergedSlogan] 未检测到旧版 tavern_events，仅使用 script.eventSource 注入提示。');
     }
 
     // 3. 标语滚动核心
