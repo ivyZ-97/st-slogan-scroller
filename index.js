@@ -16,7 +16,7 @@ let lastSpeed = null;
     CHANGE_ON_AI_REPLY: true,      // AI 回复后是否自动换一句
     AI_PICK_PROB: 0.6,             // 非 AI-only 模式下，优先采用 AI 的概率
     REQUIRE_AI_VERBATIM: true,     // 只吃 data-verbatim="1"
-    AI_ONLY: false,                // ✅ 新增：仅使用 AI 生成（禁用语料库）
+    AI_ONLY: false,                // ✅ 仅使用 AI 生成（禁用语料库）
     CONTEXT_AWARE: true,           // 是否向模型注入“生成标语”的提示
     LIB_SAMPLE_SIZE: 18,           // 候选语料库抽样条数（非 AI-only 时）
     MAX_ZH: 15,                    // 中文长度限制
@@ -334,7 +334,7 @@ let lastSpeed = null;
       if (typeof msg.content === 'string') {
         text = msg.content;
       } else if (Array.isArray(msg.content)) {
-        text = msg.content.map((c) => (c && c.text) || '').join('\n');
+        text = msg.content.map(c => (c && c.text) || '').join('\n');
       }
       text = String(text || '').trim();
       if (!text) continue;
@@ -371,10 +371,9 @@ let lastSpeed = null;
     ].join('\n');
   }
 
-  // 使用 SillyTavern 的新事件总线注入提示
+  // 使用 SillyTavern 的新事件总线注入提示（只用 STYLE_PROMPT，不用 AI 摘录）
   function tryRegisterPromptGuard() {
     try {
-      // 关键：走 script.eventSource，而不是 window.tavern_events
       if (!script.eventSource || !script.event_types || !script.event_types.CHAT_COMPLETION_PROMPT_READY) {
         console.warn('[MergedSlogan] script.eventSource 未就绪，暂不注入提示。');
         return;
@@ -383,22 +382,28 @@ let lastSpeed = null;
       script.eventSource.on(
         script.event_types.CHAT_COMPLETION_PROMPT_READY,
         (eventData = {}) => {
-          // ST 内部有 dryRun，照抄成功案例的防御
           if (eventData.dryRun === true || !Array.isArray(eventData.chat)) return;
           if (!CONFIG.CONTEXT_AWARE) return;
 
           const ctx = buildContextFromChat(eventData.chat);
           const recent = collectRecentSlogans(6);
           const lib = CONFIG.AI_ONLY ? [] : buildLibrarySample(CONFIG.LIB_SAMPLE_SIZE);
-          const prompt = makePrompt(ctx, lib, recent, CONFIG.STYLE_PROMPT || '');
+          const styleStr = (CONFIG.STYLE_PROMPT || '').trim();
 
-          // ✅ 最简单、也是官方示例的方式：追加一条 system 消息
+          const prompt = makePrompt(ctx, lib, recent, styleStr);
+
           eventData.chat.push({
             role: 'system',
             content: prompt,
           });
 
-          console.log('[MergedSlogan] 已向 CHAT_COMPLETION_PROMPT_READY 注入标语提示（AI_ONLY =', CONFIG.AI_ONLY, '）。');
+          console.log(
+            '[MergedSlogan] 已向 CHAT_COMPLETION_PROMPT_READY 注入标语提示（AI_ONLY =',
+            CONFIG.AI_ONLY,
+            '，styleLen =',
+            styleStr.length,
+            '）。'
+          );
         }
       );
     } catch (e) {
@@ -530,6 +535,7 @@ let lastSpeed = null;
         </div>
       `;
       $('#extensions_settings').append(html);
+
       // 保证本面板里的勾选框都在文字前面显示
       if (!document.getElementById('merged_slogan_checkbox_fix')) {
         const st = document.createElement('style');
@@ -538,9 +544,9 @@ let lastSpeed = null;
           /* 只限定在随机文案定制面板里，避免影响别的扩展 */
           #merged_slogan_panel .form-group label {
             display: inline-flex;
-            flex-direction: row;     /* 一定是左→右，不要 row-reverse */
+            flex-direction: row;
             align-items: center;
-            gap: 4px;                /* 方框和文字之间留一点空隙 */
+            gap: 4px;
           }
           #merged_slogan_panel .form-group label input[type="checkbox"] {
             margin: 0;
@@ -550,51 +556,51 @@ let lastSpeed = null;
       }
 
       // 顶部文案配置事件
-      $(document).on('change', '#merged_slogan_panel #cfg_change_on_ai', (e) => {
+      $(document).on('change', '#merged_slogan_panel #cfg_change_on_ai', e => {
         CONFIG.CHANGE_ON_AI_REPLY = e.currentTarget.checked;
         saveConfig();
       });
-      $(document).on('change', '#merged_slogan_panel #cfg_context_aware', (e) => {
+      $(document).on('change', '#merged_slogan_panel #cfg_context_aware', e => {
         CONFIG.CONTEXT_AWARE = e.currentTarget.checked;
         saveConfig();
       });
-      $(document).on('change', '#merged_slogan_panel #cfg_require_verbatim', (e) => {
+      $(document).on('change', '#merged_slogan_panel #cfg_require_verbatim', e => {
         CONFIG.REQUIRE_AI_VERBATIM = e.currentTarget.checked;
         saveConfig();
       });
-      $(document).on('change', '#merged_slogan_panel #cfg_ai_only', (e) => {
+      $(document).on('change', '#merged_slogan_panel #cfg_ai_only', e => {
         CONFIG.AI_ONLY = e.currentTarget.checked;
         saveConfig();
       });
-      $(document).on('input', '#merged_slogan_panel #cfg_ai_prob', (e) => {
+      $(document).on('input', '#merged_slogan_panel #cfg_ai_prob', e => {
         const v = parseFloat(e.currentTarget.value);
         if (!isNaN(v) && v >= 0 && v <= 1) {
           CONFIG.AI_PICK_PROB = v;
           saveConfig();
         }
       });
-      $(document).on('input', '#merged_slogan_panel #cfg_lib_sample', (e) => {
+      $(document).on('input', '#merged_slogan_panel #cfg_lib_sample', e => {
         const v = parseInt(e.currentTarget.value, 10);
         if (!isNaN(v) && v >= 1) {
           CONFIG.LIB_SAMPLE_SIZE = v;
           saveConfig();
         }
       });
-      $(document).on('input', '#merged_slogan_panel #cfg_max_zh', (e) => {
+      $(document).on('input', '#merged_slogan_panel #cfg_max_zh', e => {
         const v = parseInt(e.currentTarget.value, 10);
         if (!isNaN(v) && v >= 4) {
           CONFIG.MAX_ZH = v;
           saveConfig();
         }
       });
-      $(document).on('input', '#merged_slogan_panel #cfg_max_en', (e) => {
+      $(document).on('input', '#merged_slogan_panel #cfg_max_en', e => {
         const v = parseInt(e.currentTarget.value, 10);
         if (!isNaN(v) && v >= 10) {
           CONFIG.MAX_EN = v;
           saveConfig();
         }
       });
-      $(document).on('input', '#merged_slogan_panel #cfg_style_prompt', (e) => {
+      $(document).on('input', '#merged_slogan_panel #cfg_style_prompt', e => {
         CONFIG.STYLE_PROMPT = e.currentTarget.value;
         saveConfig();
       });
@@ -628,25 +634,25 @@ let lastSpeed = null;
   function getActiveWrapper() {
     const chat = document.getElementById('chat');
     if (!chat) return null;
-  
+
     const chatRect = chat.getBoundingClientRect();
     const wrappers = chat.querySelectorAll('.mes .mesAvatarWrapper');
     if (!wrappers.length) return null;
-  
+
     let best = null;
     let bestBottom = -Infinity;
-  
+
     wrappers.forEach(w => {
       const rect = w.getBoundingClientRect();
       // 跟聊天区域没有交集的直接略过
       if (rect.bottom <= chatRect.top || rect.top >= chatRect.bottom) return;
-  
+
       if (rect.bottom > bestBottom) {
         bestBottom = rect.bottom;
         best = w;
       }
     });
-  
+
     return best || null;
   }
 
@@ -663,80 +669,79 @@ let lastSpeed = null;
 
   let applyTimer = null;
 
-function updateSloganScrollImmediate() {
-  // 先找当前聊天区视窗内“最靠下”的那条消息头像
-  const wrapper = getActiveWrapper();
+  function updateSloganScrollImmediate() {
+    // 先找当前聊天区视窗内“最靠下”的那条消息头像
+    const wrapper = getActiveWrapper();
 
-  if (!wrapper) {
-    // 视口里没有任何可见楼层 → 停掉所有滚动
-    clearAllScrollExcept(null);
-    lastWrapper = null;
-    lastText = '';
-    lastNeedScroll = null;
-    return;
-  }
+    if (!wrapper) {
+      // 视口里没有任何可见楼层 → 停掉所有滚动
+      clearAllScrollExcept(null);
+      lastWrapper = null;
+      lastText = '';
+      lastNeedScroll = null;
+      return;
+    }
 
-  // 只保留当前这条的滚动状态
-  clearAllScrollExcept(wrapper);
+    // 只保留当前这条的滚动状态
+    clearAllScrollExcept(wrapper);
 
-  if (applyTimer) {
-    clearTimeout(applyTimer);
-    applyTimer = null;
-  }
+    if (applyTimer) {
+      clearTimeout(applyTimer);
+      applyTimer = null;
+    }
 
-  const runCheckAndApply = () => {
-    const currentSlogan = getSloganFromCss();
-    if (!currentSlogan) {
+    const runCheckAndApply = () => {
+      const currentSlogan = getSloganFromCss();
+      if (!currentSlogan) {
+        wrapper.classList.remove('slogan-scroll');
+        wrapper.style.animationDuration = '';
+        return;
+      }
+
+      const pseudo = getComputedStyle(wrapper, '::after');
+      const textWidth = measureTextWidth(`| ${currentSlogan}`, pseudo);
+      const boxWidth = wrapper.getBoundingClientRect().width;
+      const needScroll = SCFG.enabled && textWidth > boxWidth;
+
+      const changed =
+        wrapper !== lastWrapper ||
+        currentSlogan !== lastText ||
+        SCFG.speedSec !== lastSpeed ||
+        needScroll !== lastNeedScroll;
+
+      lastWrapper = wrapper;
+      lastText = currentSlogan;
+      lastSpeed = SCFG.speedSec;
+      lastNeedScroll = needScroll;
+
+      if (!needScroll) {
+        wrapper.classList.remove('slogan-scroll');
+        wrapper.style.animationDuration = '';
+        return;
+      }
+
+      // 如果跟上一次完全一样，就不要重启动画
+      if (!changed && wrapper.classList.contains('slogan-scroll')) {
+        return;
+      }
+
       wrapper.classList.remove('slogan-scroll');
-      wrapper.style.animationDuration = '';
-      return;
-    }
+      void wrapper.offsetWidth; // 强制 reflow，让动画能重新开始
+      wrapper.style.animationDuration = `${SCFG.speedSec}s`;
+      wrapper.classList.add('slogan-scroll');
+    };
 
-    const pseudo = getComputedStyle(wrapper, '::after');
-    const textWidth = measureTextWidth(`| ${currentSlogan}`, pseudo);
-    const boxWidth = wrapper.getBoundingClientRect().width;
-    const needScroll = SCFG.enabled && textWidth > boxWidth;
-
-    const changed =
-      wrapper !== lastWrapper ||
-      currentSlogan !== lastText ||
-      SCFG.speedSec !== lastSpeed ||
-      needScroll !== lastNeedScroll;
-
-    lastWrapper = wrapper;
-    lastText = currentSlogan;
-    lastSpeed = SCFG.speedSec;
-    lastNeedScroll = needScroll;
-
-    if (!needScroll) {
-      wrapper.classList.remove('slogan-scroll');
-      wrapper.style.animationDuration = '';
-      return;
-    }
-
-    // 如果跟上一次完全一样，就不要重启动画
-    if (!changed && wrapper.classList.contains('slogan-scroll')) {
-      return;
-    }
-
-    wrapper.classList.remove('slogan-scroll');
-    void wrapper.offsetWidth; // 强制 reflow，让动画能重新开始
-    wrapper.style.animationDuration = `${SCFG.speedSec}s`;
-    wrapper.classList.add('slogan-scroll');
-  };
-
-  if (SCFG.enabled) {
-    if (SCFG.delayMs > 0) {
-      applyTimer = setTimeout(runCheckAndApply, SCFG.delayMs);
+    if (SCFG.enabled) {
+      if (SCFG.delayMs > 0) {
+        applyTimer = setTimeout(runCheckAndApply, SCFG.delayMs);
+      } else {
+        runCheckAndApply();
+      }
     } else {
-      runCheckAndApply();
+      wrapper.classList.remove('slogan-scroll');
+      wrapper.style.animationDuration = '';
     }
-  } else {
-    wrapper.classList.remove('slogan-scroll');
-    wrapper.style.animationDuration = '';
   }
-}
-
 
   window.__sloganScrollerUpdate = updateSloganScrollImmediate;
 
@@ -799,13 +804,13 @@ function updateSloganScrollImmediate() {
     $('#scroller_delay').val((SCFG.delayMs / 1000).toFixed(SCFG.delayMs % 1000 ? 1 : 0));
     $('#scroller_speed').val(SCFG.speedSec);
 
-    $(document).on('change', '#scroller_enable', (e) => {
+    $(document).on('change', '#scroller_enable', e => {
       SCFG.enabled = e.currentTarget.checked;
       saveConfig();
       updateSloganScrollImmediate();
     });
 
-    $(document).on('input change', '#scroller_delay', (e) => {
+    $(document).on('input change', '#scroller_delay', e => {
       const v = parseFloat(e.currentTarget.value);
       if (!isNaN(v) && v >= 0) {
         SCFG.delayMs = v * 1000;
@@ -813,7 +818,7 @@ function updateSloganScrollImmediate() {
       }
     });
 
-    $(document).on('input change', '#scroller_speed', (e) => {
+    $(document).on('input change', '#scroller_speed', e => {
       const v = parseFloat(e.currentTarget.value);
       if (!isNaN(v) && v > 0) {
         SCFG.speedSec = v;
@@ -825,7 +830,7 @@ function updateSloganScrollImmediate() {
 
   function initScrollerCore() {
     console.log('%c[SloganScroller] Init (UI + debounced)', 'color:#4CAF50;font-weight:bold');
-  
+
     const chat = document.getElementById('chat');
     if (chat) {
       // 新消息插入时，立刻重算一次（比如你发言或AI回复）
@@ -833,11 +838,11 @@ function updateSloganScrollImmediate() {
         updateSloganScrollImmediate();
       });
       observer.observe(chat, { childList: true, subtree: false });
-  
+
       // 关键：聊天面板自身滚动时也要触发重算
       chat.addEventListener('scroll', debounceScroll, { passive: true });
     }
-  
+
     // 有些布局整体页面也会滚，保留 window 的监听作为兜底
     window.addEventListener('scroll', debounceScroll, { passive: true });
     window.addEventListener('resize', debounceResize);
@@ -855,13 +860,12 @@ function updateSloganScrollImmediate() {
     }, 500);
 
     // 2. SillyTavern 事件：文案部分
-    // 2. SillyTavern 事件：文案部分
     setQuoteFromLibraryOnly();  // 初始化先给个库里的句子
 
     // 2.1 标语提示注入：走 script.eventSource 事件总线
     tryRegisterPromptGuard();
 
-    // 2.2 如果你还想继续兼容老的 tavern_events 事件（比如 CHAT_CHANGED、MESSAGE_RECEIVED）
+    // 2.2 兼容旧版 tavern_events（如果存在）
     if (typeof window.tavern_events !== 'undefined' && typeof window.eventOn === 'function') {
       const EV = window.tavern_events;
 
@@ -871,7 +875,7 @@ function updateSloganScrollImmediate() {
       });
 
       if (EV.MESSAGE_RECEIVED) {
-        window.eventOn(EV.MESSAGE_RECEIVED, (message) => {
+        window.eventOn(EV.MESSAGE_RECEIVED, message => {
           if (message && message.is_user) return;
           setTimeout(() => {
             if (CONFIG.CHANGE_ON_AI_REPLY) setQuoteFromAIOrLibrary();
