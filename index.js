@@ -354,14 +354,14 @@ let lastSpeed = null;
     return [
       '你需要在本次回复正文的末尾额外输出一个隐藏HTML元素，格式必须为：',
       '<div hidden class="slogan-container" data-verbatim="1">✦❋原句</div>',
-      ''
-      '【标语风格要求（可选，由用户外部注入）】',
+      '',
+      '【标语风格和要求（可选，由用户外部注入）】',
       styleBlock,
       '',
       '【对话上下文（已由前端裁剪）】',
       contextText || '(无)',
       '',
-      '【候选语料库（可参考，但在 AI-only 模式下可能为空）】',
+      '【候选语料库（可参考）】',
       hasLib ? JSON.stringify(sampledLib, null, 0) : '(本次不提供候选语料，完全依靠上下文与人设)',
       '',
       '【最近已用标语（需避免重复或近义复述）】',
