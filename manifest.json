@@ -1,0 +1,10 @@
+{
+  "display_name": "文案滚动判定",
+  "js": "index.js",
+  "css": "",
+  "author": "ivy z",
+  "version": "1.0.0",
+  "homePage": "https://github.com/ivyZ-97/st-slogan-scroller",
+  "auto_update": true,
+  "minimum_client_version": "1.13.0"
+}
