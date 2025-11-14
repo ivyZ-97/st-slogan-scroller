@@ -351,30 +351,60 @@ let lastSpeed = null;
   }
 
   // ========================= 系统提示（原句隐藏标语） =========================
+  // 这块按“成功案例”结构来写：
+  // 1 行固定前缀 + 你的 UI 文本 + 固定规则，再追加库/最近/上下文（不影响原功能）
   function makePrompt(contextText, sampledLib, recent, stylePrompt) {
-    const hasLib = Array.isArray(sampledLib) && sampledLib.length > 0;
+    // 完全照成功案例：固定前缀
+    const prefixLine =
+      '请在每次正文的末尾额外输出一个隐藏的HTML元素，格式为 `<div hidden class="slogan-container" data-verbatim="1">✦❋内容</div>`。';
+
+    // 你在 UI 文本框里填的那一段（“经典文学、个人风格…”）
     const styleBlock = stylePrompt && stylePrompt.trim()
       ? stylePrompt.trim()
-      : '请根据当前对话与角色人设，自行决定一句最贴合情绪与语境的短句。';
+      : '';
 
-    return [
-      '你需要在本次回复正文的末尾额外输出一个隐藏HTML元素，格式必须为：',
-      '<div hidden class="slogan-container" data-verbatim="1">✦❋原句</div>',
-      '',
-      '【标语风格和要求（可选，由用户外部注入）】',
-      styleBlock,
-      '',
-      '【对话上下文（已由前端裁剪）】',
-      contextText || '(无)',
-      '',
-      '【候选语料库（可参考）】',
-      hasLib ? JSON.stringify(sampledLib, null, 0) : '(本次不提供候选语料，完全依靠上下文与人设)',
-      '',
-      '【最近已用标语（需避免重复或近义复述）】',
-      JSON.stringify(recent || [], null, 0),
-      '',
-      `【长度限制】中文 ≤ ${CONFIG.MAX_ZH} 字；英文 ≤ ${CONFIG.MAX_EN} 字符。`,
+    // 固定规则：长度 + 不重复 + 不解释
+    const ruleBlock = [
+      `元素内只包含当前角色极具个人风格的一句短句，风格可参考座右铭、爱语、吐槽、黑色幽默等；若字数太长可进行改写，中文最长 ${CONFIG.MAX_ZH} 个字，英文最长 ${CONFIG.MAX_EN} 个字符。`,
+      '标语不要和最近几次使用过的标语重复，也不要额外解释。'
     ].join('\n');
+
+    const parts = [prefixLine];
+
+    if (styleBlock) {
+      // 成功案例就是：前缀下一行接你写的那坨说明
+      parts.push(styleBlock);
+    }
+
+    parts.push(ruleBlock);
+
+    if (Array.isArray(sampledLib) && sampledLib.length) {
+      parts.push(
+        '【候选语料库（可参考，可自由改写）】',
+        sampledLib.join(' / ')
+      );
+    } else {
+      parts.push(
+        '【候选语料库】',
+        '(本次不提供候选语料，可完全依照上下文与人设自行编写)'
+      );
+    }
+
+    if (Array.isArray(recent) && recent.length) {
+      parts.push(
+        '【最近已用标语（请避免重复或近义复述）】',
+        recent.join(' / ')
+      );
+    }
+
+    if (contextText && contextText.trim()) {
+      parts.push(
+        '【对话上下文（可酌情参考语气与情绪）】',
+        contextText
+      );
+    }
+
+    return parts.join('\n\n');
   }
 
   // ========================= Prompt 注入模块（仿成功案例） =========================
