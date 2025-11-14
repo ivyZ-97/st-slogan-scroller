@@ -16,12 +16,12 @@ let lastSpeed = null;
     CHANGE_ON_AI_REPLY: true,      // AI 回复后是否自动换一句
     AI_PICK_PROB: 0.6,             // 非 AI-only 模式下，优先采用 AI 的概率
     REQUIRE_AI_VERBATIM: true,     // 只吃 data-verbatim="1"
-    AI_ONLY: false,                // ✅ 仅使用 AI 生成（禁用语料库）
+    AI_ONLY: false,                // 仅使用 AI 生成（禁用语料库）
     CONTEXT_AWARE: true,           // 是否向模型注入“生成标语”的提示
     LIB_SAMPLE_SIZE: 18,           // 候选语料库抽样条数（非 AI-only 时）
     MAX_ZH: 15,                    // 中文长度限制
     MAX_EN: 80,                    // 英文长度限制
-    STYLE_PROMPT: '',              // ✅ 外部注入风格提示（UI 文本框）
+    STYLE_PROMPT: '',              // 外部注入风格提示（UI 文本框）
   });
 
   const DEFAULT_SCROLLER_CFG = Object.freeze({
@@ -285,7 +285,13 @@ let lastSpeed = null;
   function getQuoteLibraryFlat() {
     const external = getExternalQuotes();
     const base = external && external.length ? external : BASE_QUOTES;
-    const cleaned = Array.from(new Set(base.map(s => String(s || '').trim()).filter(Boolean)));
+    const cleaned = Array.from(
+      new Set(
+        base
+          .map((s) => String(s || '').trim())
+          .filter(Boolean),
+      ),
+    );
     return cleaned.length ? cleaned : ['故事的开头，总是极具温柔。'];
   }
 
@@ -304,7 +310,7 @@ let lastSpeed = null;
 
   function collectRecentSlogans(m = 6) {
     const nodes = Array.from(
-      document.querySelectorAll('#chat .mes .mes_text div[hidden].slogan-container')
+      document.querySelectorAll('#chat .mes .mes_text div[hidden].slogan-container'),
     );
     const res = [];
     for (let i = nodes.length - 1; i >= 0 && res.length < m; i--) {
@@ -334,7 +340,7 @@ let lastSpeed = null;
       if (typeof msg.content === 'string') {
         text = msg.content;
       } else if (Array.isArray(msg.content)) {
-        text = msg.content.map(c => (c && c.text) || '').join('\n');
+        text = msg.content.map((c) => (c && c.text) || '').join('\n');
       }
       text = String(text || '').trim();
       if (!text) continue;
@@ -347,7 +353,7 @@ let lastSpeed = null;
   // ========================= 系统提示（原句隐藏标语） =========================
   function makePrompt(contextText, sampledLib, recent, stylePrompt) {
     const hasLib = Array.isArray(sampledLib) && sampledLib.length > 0;
-    const styleBlock = (stylePrompt && stylePrompt.trim())
+    const styleBlock = stylePrompt && stylePrompt.trim()
       ? stylePrompt.trim()
       : '请根据当前对话与角色人设，自行决定一句最贴合情绪与语境的短句。';
 
@@ -371,51 +377,59 @@ let lastSpeed = null;
     ].join('\n');
   }
 
-  // 使用 SillyTavern 的新事件总线注入提示（只用 STYLE_PROMPT，不用 AI 摘录）
-  function tryRegisterPromptGuard() {
-    try {
+  // ========================= Prompt 注入模块（仿成功案例） =========================
+  const SloganPromptInjection = {
+    initialized: false,
+
+    init() {
+      if (this.initialized) return;
       if (!script.eventSource || !script.event_types || !script.event_types.CHAT_COMPLETION_PROMPT_READY) {
-        console.warn('[MergedSlogan] script.eventSource 未就绪，暂不注入提示。');
+        console.warn('[MergedSlogan] eventSource not ready, skip PromptInjection.');
         return;
       }
 
       script.eventSource.on(
         script.event_types.CHAT_COMPLETION_PROMPT_READY,
-        (eventData = {}) => {
-          if (eventData.dryRun === true || !Array.isArray(eventData.chat)) return;
-          if (!CONFIG.CONTEXT_AWARE) return;
-
-          const ctx = buildContextFromChat(eventData.chat);
-          const recent = collectRecentSlogans(6);
-          const lib = CONFIG.AI_ONLY ? [] : buildLibrarySample(CONFIG.LIB_SAMPLE_SIZE);
-          const styleStr = (CONFIG.STYLE_PROMPT || '').trim();
-
-          const prompt = makePrompt(ctx, lib, recent, styleStr);
-
-          eventData.chat.push({
-            role: 'system',
-            content: prompt,
-          });
-
-          console.log(
-            '[MergedSlogan] 已向 CHAT_COMPLETION_PROMPT_READY 注入标语提示（AI_ONLY =',
-            CONFIG.AI_ONLY,
-            '，styleLen =',
-            styleStr.length,
-            '）。'
-          );
-        }
+        this.onPromptReady.bind(this),
       );
-    } catch (e) {
-      console.error('[MergedSlogan] 注册 CHAT_COMPLETION_PROMPT_READY 失败：', e);
-    }
-  }
+
+      this.initialized = true;
+      console.log('[MergedSlogan] PromptInjection initialized.');
+    },
+
+    onPromptReady(eventData = {}) {
+      if (eventData.dryRun === true) return;
+      if (!Array.isArray(eventData.chat)) return;
+      if (!CONFIG.CONTEXT_AWARE) return;
+
+      const ctx = buildContextFromChat(eventData.chat);
+      const recent = collectRecentSlogans(6);
+      const lib = CONFIG.AI_ONLY ? [] : buildLibrarySample(CONFIG.LIB_SAMPLE_SIZE);
+      const styleStr = (CONFIG.STYLE_PROMPT || '').trim();
+      const prompt = makePrompt(ctx, lib, recent, styleStr);
+
+      eventData.chat.push({
+        role: 'system',
+        content: prompt,
+      });
+
+      console.log(
+        '[MergedSlogan] 已向 CHAT_COMPLETION_PROMPT_READY 注入标语提示（AI_ONLY =',
+        CONFIG.AI_ONLY,
+        '，styleLen =',
+        styleStr.length,
+        '）。',
+      );
+    },
+  };
 
   // ========================= 读取 AI 隐藏标语 =========================
   function getLatestAISloganVerbatim() {
     try {
       const nodes = Array.from(
-        document.querySelectorAll('#chat .mes:not([is_user="true"]) .mes_text div[hidden].slogan-container')
+        document.querySelectorAll(
+          '#chat .mes:not([is_user="true"]) .mes_text div[hidden].slogan-container',
+        ),
       );
       if (!nodes.length) return '';
       for (let i = nodes.length - 1; i >= 0; i--) {
@@ -536,12 +550,11 @@ let lastSpeed = null;
       `;
       $('#extensions_settings').append(html);
 
-      // 保证本面板里的勾选框都在文字前面显示
+      // 保证本面板里的勾选框都在文字前面显示（只影响本扩展）
       if (!document.getElementById('merged_slogan_checkbox_fix')) {
         const st = document.createElement('style');
         st.id = 'merged_slogan_checkbox_fix';
         st.textContent = `
-          /* 只限定在随机文案定制面板里，避免影响别的扩展 */
           #merged_slogan_panel .form-group label {
             display: inline-flex;
             flex-direction: row;
@@ -556,51 +569,51 @@ let lastSpeed = null;
       }
 
       // 顶部文案配置事件
-      $(document).on('change', '#merged_slogan_panel #cfg_change_on_ai', e => {
+      $(document).on('change', '#merged_slogan_panel #cfg_change_on_ai', (e) => {
         CONFIG.CHANGE_ON_AI_REPLY = e.currentTarget.checked;
         saveConfig();
       });
-      $(document).on('change', '#merged_slogan_panel #cfg_context_aware', e => {
+      $(document).on('change', '#merged_slogan_panel #cfg_context_aware', (e) => {
         CONFIG.CONTEXT_AWARE = e.currentTarget.checked;
         saveConfig();
       });
-      $(document).on('change', '#merged_slogan_panel #cfg_require_verbatim', e => {
+      $(document).on('change', '#merged_slogan_panel #cfg_require_verbatim', (e) => {
         CONFIG.REQUIRE_AI_VERBATIM = e.currentTarget.checked;
         saveConfig();
       });
-      $(document).on('change', '#merged_slogan_panel #cfg_ai_only', e => {
+      $(document).on('change', '#merged_slogan_panel #cfg_ai_only', (e) => {
         CONFIG.AI_ONLY = e.currentTarget.checked;
         saveConfig();
       });
-      $(document).on('input', '#merged_slogan_panel #cfg_ai_prob', e => {
+      $(document).on('input', '#merged_slogan_panel #cfg_ai_prob', (e) => {
         const v = parseFloat(e.currentTarget.value);
         if (!isNaN(v) && v >= 0 && v <= 1) {
           CONFIG.AI_PICK_PROB = v;
           saveConfig();
         }
       });
-      $(document).on('input', '#merged_slogan_panel #cfg_lib_sample', e => {
+      $(document).on('input', '#merged_slogan_panel #cfg_lib_sample', (e) => {
         const v = parseInt(e.currentTarget.value, 10);
         if (!isNaN(v) && v >= 1) {
           CONFIG.LIB_SAMPLE_SIZE = v;
           saveConfig();
         }
       });
-      $(document).on('input', '#merged_slogan_panel #cfg_max_zh', e => {
+      $(document).on('input', '#merged_slogan_panel #cfg_max_zh', (e) => {
         const v = parseInt(e.currentTarget.value, 10);
         if (!isNaN(v) && v >= 4) {
           CONFIG.MAX_ZH = v;
           saveConfig();
         }
       });
-      $(document).on('input', '#merged_slogan_panel #cfg_max_en', e => {
+      $(document).on('input', '#merged_slogan_panel #cfg_max_en', (e) => {
         const v = parseInt(e.currentTarget.value, 10);
         if (!isNaN(v) && v >= 10) {
           CONFIG.MAX_EN = v;
           saveConfig();
         }
       });
-      $(document).on('input', '#merged_slogan_panel #cfg_style_prompt', e => {
+      $(document).on('input', '#merged_slogan_panel #cfg_style_prompt', (e) => {
         CONFIG.STYLE_PROMPT = e.currentTarget.value;
         saveConfig();
       });
@@ -642,7 +655,7 @@ let lastSpeed = null;
     let best = null;
     let bestBottom = -Infinity;
 
-    wrappers.forEach(w => {
+    wrappers.forEach((w) => {
       const rect = w.getBoundingClientRect();
       // 跟聊天区域没有交集的直接略过
       if (rect.bottom <= chatRect.top || rect.top >= chatRect.bottom) return;
@@ -659,7 +672,7 @@ let lastSpeed = null;
   function clearAllScrollExcept(keep) {
     document
       .querySelectorAll('#chat .mes .mesAvatarWrapper.slogan-scroll')
-      .forEach(el => {
+      .forEach((el) => {
         if (el !== keep) {
           el.classList.remove('slogan-scroll');
           el.style.animationDuration = '';
@@ -801,16 +814,18 @@ let lastSpeed = null;
     panel.append(html);
 
     $('#scroller_enable').prop('checked', SCFG.enabled);
-    $('#scroller_delay').val((SCFG.delayMs / 1000).toFixed(SCFG.delayMs % 1000 ? 1 : 0));
+    $('#scroller_delay').val(
+      (SCFG.delayMs / 1000).toFixed(SCFG.delayMs % 1000 ? 1 : 0),
+    );
     $('#scroller_speed').val(SCFG.speedSec);
 
-    $(document).on('change', '#scroller_enable', e => {
+    $(document).on('change', '#scroller_enable', (e) => {
       SCFG.enabled = e.currentTarget.checked;
       saveConfig();
       updateSloganScrollImmediate();
     });
 
-    $(document).on('input change', '#scroller_delay', e => {
+    $(document).on('input change', '#scroller_delay', (e) => {
       const v = parseFloat(e.currentTarget.value);
       if (!isNaN(v) && v >= 0) {
         SCFG.delayMs = v * 1000;
@@ -818,7 +833,7 @@ let lastSpeed = null;
       }
     });
 
-    $(document).on('input change', '#scroller_speed', e => {
+    $(document).on('input change', '#scroller_speed', (e) => {
       const v = parseFloat(e.currentTarget.value);
       if (!isNaN(v) && v > 0) {
         SCFG.speedSec = v;
@@ -829,7 +844,10 @@ let lastSpeed = null;
   }
 
   function initScrollerCore() {
-    console.log('%c[SloganScroller] Init (UI + debounced)', 'color:#4CAF50;font-weight:bold');
+    console.log(
+      '%c[SloganScroller] Init (UI + debounced)',
+      'color:#4CAF50;font-weight:bold',
+    );
 
     const chat = document.getElementById('chat');
     if (chat) {
@@ -859,14 +877,26 @@ let lastSpeed = null;
       }
     }, 500);
 
-    // 2. SillyTavern 事件：文案部分
-    setQuoteFromLibraryOnly();  // 初始化先给个库里的句子
+    // 2. 顶部文案初始化
+    setQuoteFromLibraryOnly();
 
-    // 2.1 标语提示注入：走 script.eventSource 事件总线
-    tryRegisterPromptGuard();
+    // 2.1 Prompt 注入模块：等待 eventSource 就绪再初始化
+    const esTimer = setInterval(() => {
+      if (
+        script.eventSource &&
+        script.event_types &&
+        script.event_types.CHAT_COMPLETION_PROMPT_READY
+      ) {
+        clearInterval(esTimer);
+        SloganPromptInjection.init();
+      }
+    }, 500);
 
-    // 2.2 兼容旧版 tavern_events（如果存在）
-    if (typeof window.tavern_events !== 'undefined' && typeof window.eventOn === 'function') {
+    // 2.2 兼容旧版 tavern_events（如果存在） → 文案来源切换
+    if (
+      typeof window.tavern_events !== 'undefined' &&
+      typeof window.eventOn === 'function'
+    ) {
       const EV = window.tavern_events;
 
       window.eventOn(EV.CHAT_CHANGED, () => {
@@ -875,7 +905,7 @@ let lastSpeed = null;
       });
 
       if (EV.MESSAGE_RECEIVED) {
-        window.eventOn(EV.MESSAGE_RECEIVED, message => {
+        window.eventOn(EV.MESSAGE_RECEIVED, (message) => {
           if (message && message.is_user) return;
           setTimeout(() => {
             if (CONFIG.CHANGE_ON_AI_REPLY) setQuoteFromAIOrLibrary();
@@ -883,7 +913,9 @@ let lastSpeed = null;
         });
       }
     } else {
-      console.warn('[MergedSlogan] 未检测到旧版 tavern_events，仅使用 script.eventSource 注入提示。');
+      console.warn(
+        '[MergedSlogan] 未检测到旧版 tavern_events，仅使用 script.eventSource 注入提示。',
+      );
     }
 
     // 3. 标语滚动核心
