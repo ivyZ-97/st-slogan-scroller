@@ -2,7 +2,6 @@
 import * as script from '../../../../script.js';
 import { extension_settings } from '../../../extensions.js';
 
-const SCFG = ROOT_CFG.scroller;
 const EXT_NAME = 'merged_slogan';
 
 let lastWrapper = null;
@@ -26,10 +25,10 @@ let lastSpeed = null;
   });
 
   const DEFAULT_SCROLLER_CFG = Object.freeze({
-    enabled: true,   // 是否启用滚动
-    delayMs: 0,      // 开始滚动前延迟（毫秒）
-    speedSec: 26,    // 滚完一整圈需要的秒数
-    debounceMs: 500, // 滚动/窗口变化防抖时间（毫秒）
+    enabled: true,
+    delayMs: 0,
+    speedSec: 26,
+    debounceMs: 500,
   });
 
   function getRootConfig() {
