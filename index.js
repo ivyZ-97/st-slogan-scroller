@@ -750,8 +750,6 @@ const EXT_NAME = 'merged_slogan';
   function initScrollerCore() {
     console.log('%c[SloganScroller] Init (UI + debounced)', 'color:#4CAF50;font-weight:bold');
 
-    updateSloganScrollImmediate();
-
     const chat = document.getElementById('chat');
     if (chat) {
       const observer = new MutationObserver(() => {
