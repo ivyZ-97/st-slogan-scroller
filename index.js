@@ -644,89 +644,80 @@ let lastSpeed = null;
 
   let applyTimer = null;
 
-  function updateSloganScrollImmediate() {
-    const wrapper = getActiveWrapper();
-    if (!wrapper) {
-      // 视口里没有任何可见楼层 → 停掉所有滚动
-      clearAllScrollExcept(null);
-      lastWrapper = null;
-      lastText = '';
-      lastNeedScroll = null;
-      return;
-    }
+function updateSloganScrollImmediate() {
+  // 先找当前聊天区视窗内“最靠下”的那条消息头像
+  const wrapper = getActiveWrapper();
 
-clearAllScrollExcept(wrapper);
+  if (!wrapper) {
+    // 视口里没有任何可见楼层 → 停掉所有滚动
+    clearAllScrollExcept(null);
+    lastWrapper = null;
+    lastText = '';
+    lastNeedScroll = null;
+    return;
+  }
 
-    const wrapper = getActiveWrapper();
-    
-    if (!wrapper) {
-      // 当前视窗里没有任何符合条件的消息 → 全部停止滚动
-      clearAllScrollExcept(null);
-      lastWrapper = null;
-      lastText = '';
-      lastNeedScroll = null;
-      return;
-    }
-    
-    clearAllScrollExcept(wrapper);
+  // 只保留当前这条的滚动状态
+  clearAllScrollExcept(wrapper);
 
+  if (applyTimer) {
+    clearTimeout(applyTimer);
+    applyTimer = null;
+  }
 
-    if (applyTimer) {
-      clearTimeout(applyTimer);
-      applyTimer = null;
-    }
-
-    const runCheckAndApply = () => {
-      const currentSlogan = getSloganFromCss();
-      if (!currentSlogan) {
-        wrapper.classList.remove('slogan-scroll');
-        wrapper.style.animationDuration = '';
-        return;
-      }
-
-      const pseudo = getComputedStyle(wrapper, '::after');
-      const textWidth = measureTextWidth(`| ${currentSlogan}`, pseudo);
-      const boxWidth = wrapper.getBoundingClientRect().width;
-      const needScroll = SCFG.enabled && textWidth > boxWidth;
-
-      const changed =
-        wrapper !== lastWrapper ||
-        currentSlogan !== lastText ||
-        SCFG.speedSec !== lastSpeed ||
-        needScroll !== lastNeedScroll;
-
-      lastWrapper = wrapper;
-      lastText = currentSlogan;
-      lastSpeed = SCFG.speedSec;
-      lastNeedScroll = needScroll;
-
-      if (!needScroll) {
-        wrapper.classList.remove('slogan-scroll');
-        wrapper.style.animationDuration = '';
-        return;
-      }
-
-      if (!changed && wrapper.classList.contains('slogan-scroll')) {
-        return;
-      }
-
-      wrapper.classList.remove('slogan-scroll');
-      void wrapper.offsetWidth;
-      wrapper.style.animationDuration = `${SCFG.speedSec}s`;
-      wrapper.classList.add('slogan-scroll');
-    };
-
-    if (SCFG.enabled) {
-      if (SCFG.delayMs > 0) {
-        applyTimer = setTimeout(runCheckAndApply, SCFG.delayMs);
-      } else {
-        runCheckAndApply();
-      }
-    } else {
+  const runCheckAndApply = () => {
+    const currentSlogan = getSloganFromCss();
+    if (!currentSlogan) {
       wrapper.classList.remove('slogan-scroll');
       wrapper.style.animationDuration = '';
+      return;
     }
+
+    const pseudo = getComputedStyle(wrapper, '::after');
+    const textWidth = measureTextWidth(`| ${currentSlogan}`, pseudo);
+    const boxWidth = wrapper.getBoundingClientRect().width;
+    const needScroll = SCFG.enabled && textWidth > boxWidth;
+
+    const changed =
+      wrapper !== lastWrapper ||
+      currentSlogan !== lastText ||
+      SCFG.speedSec !== lastSpeed ||
+      needScroll !== lastNeedScroll;
+
+    lastWrapper = wrapper;
+    lastText = currentSlogan;
+    lastSpeed = SCFG.speedSec;
+    lastNeedScroll = needScroll;
+
+    if (!needScroll) {
+      wrapper.classList.remove('slogan-scroll');
+      wrapper.style.animationDuration = '';
+      return;
+    }
+
+    // 如果跟上一次完全一样，就不要重启动画
+    if (!changed && wrapper.classList.contains('slogan-scroll')) {
+      return;
+    }
+
+    wrapper.classList.remove('slogan-scroll');
+    void wrapper.offsetWidth; // 强制 reflow，让动画能重新开始
+    wrapper.style.animationDuration = `${SCFG.speedSec}s`;
+    wrapper.classList.add('slogan-scroll');
+  };
+
+  if (SCFG.enabled) {
+    if (SCFG.delayMs > 0) {
+      applyTimer = setTimeout(runCheckAndApply, SCFG.delayMs);
+    } else {
+      runCheckAndApply();
+    }
+  } else {
+    wrapper.classList.remove('slogan-scroll');
+    wrapper.style.animationDuration = '';
   }
+}
+
 
   window.__sloganScrollerUpdate = updateSloganScrollImmediate;
 
