@@ -391,9 +391,36 @@ let lastSpeed = null;
         const recent = collectRecentSlogans(6);
         const lib = CONFIG.AI_ONLY ? [] : buildLibrarySample(CONFIG.LIB_SAMPLE_SIZE);
         const prompt = makePrompt(ctx, lib, recent, CONFIG.STYLE_PROMPT || '');
+        
+        const chatArr = eventData.chat;
+        if (!chatArr.length) return;
+        
+        // 找到最后一条 user 消息（一般就是你这轮的输入）
+        let lastIdx = -1;
+        for (let i = chatArr.length - 1; i >= 0; i--) {
+          if (chatArr[i].role === 'user') {
+            lastIdx = i;
+            break;
+          }
+        }
+        // 如果没找到 user，就退而求其次用最后一条消息
+        if (lastIdx === -1) lastIdx = chatArr.length - 1;
+        
+        const last = chatArr[lastIdx];
+        
+        // 把提示直接拼进这条消息的 content
+        if (typeof last.content === 'string') {
+          last.content += '\n\n' + prompt;
+        } else if (Array.isArray(last.content)) {
+          // 兼容多段 content 结构
+          last.content.push({ type: 'text', text: '\n\n' + prompt });
+        } else {
+          // 实在不行再兜底加一条 user 消息
+          chatArr.push({ role: 'user', content: prompt });
+        }
+        
+        console.log('[MergedSlogan] 已把“标语生成”提示拼进最后一条 user 消息（AI_ONLY =', CONFIG.AI_ONLY, '）。');
 
-        eventData.chat.push({ role: 'system', content: prompt });
-        console.log('[MergedSlogan] 已向本轮对话注入“标语生成”提示（AI_ONLY =', CONFIG.AI_ONLY, '）。');
       });
     } catch (e) {
       console.error('[MergedSlogan] 注册 CHAT_COMPLETION_PROMPT_READY 失败：', e);
@@ -488,45 +515,40 @@ let lastSpeed = null;
       if ($('#merged_slogan_panel').length) return;
 
       const html = `
-      <div id="merged_slogan_panel" class="inline-drawer">
-        <div class="inline-drawer-toggle inline-drawer-header">
-          <b>随机文案定制</b>
-          <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+        <div id="merged_slogan_panel" class="inline-drawer">
+          <div class="inline-drawer-toggle inline-drawer-header">
+            <b>随机文案定制</b>
+            <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+          </div>
+          <div class="inline-drawer-content" style="display:none;">
+            <div class="form-group">
+              <label><input type="checkbox" id="cfg_change_on_ai" ${CONFIG.CHANGE_ON_AI_REPLY ? 'checked' : ''}> AI 回复后更换</label>
+            </div>
+            <div class="form-group">
+              <label><input type="checkbox" id="cfg_ai_only" ${CONFIG.AI_ONLY ? 'checked' : ''}> 仅 AI 生成（禁用语料库）</label>
+            </div>
+            <div class="form-group">
+              <label><input type="checkbox" id="cfg_context_aware" ${CONFIG.CONTEXT_AWARE ? 'checked' : ''}> 注入上下文</label>
+            </div>
+            <div class="form-group">
+              <label><input type="checkbox" id="cfg_require_verbatim" ${CONFIG.REQUIRE_AI_VERBATIM ? 'checked' : ''}> 仅接受真实摘录</label>
+            </div>
+            <div class="form-group">
+              <label>AI 采纳概率 (0~1)：<input type="number" step="0.05" min="0" max="1" id="cfg_ai_prob" value="${CONFIG.AI_PICK_PROB}" class="text_pole" style="width:80px;"></label>
+            </div>
+            <div class="form-group">
+              <label>库抽样条数：<input type="number" min="1" max="60" id="cfg_lib_sample" value="${CONFIG.LIB_SAMPLE_SIZE}" class="text_pole" style="width:80px;"></label>
+            </div>
+            <div class="form-group">
+              <label>中文最长：<input type="number" min="4" max="50" id="cfg_max_zh" value="${CONFIG.MAX_ZH}" class="text_pole" style="width:80px;"></label>
+              <label>英文最长：<input type="number" min="10" max="300" id="cfg_max_en" value="${CONFIG.MAX_EN}" class="text_pole" style="width:80px; margin-left:6px;"></label>
+            </div>
+            <div class="form-group">
+              <label>风格提示</label>
+              <textarea id="cfg_style_prompt" class="text_pole" rows="4" placeholder="例如：文艺忧郁、贴合当前章节情绪……">${CONFIG.STYLE_PROMPT || ''}</textarea>
+            </div>
+          </div>
         </div>
-        <div class="inline-drawer-content" style="display:none;">
-          <div class="form-group">
-            <label><input type="checkbox" id="cfg_change_on_ai" ${CONFIG.CHANGE_ON_AI_REPLY ? 'checked' : ''}> AI 回复后更换</label>
-          </div>
-          <div class="form-group">
-            <label><input type="checkbox" id="cfg_context_aware" ${CONFIG.CONTEXT_AWARE ? 'checked' : ''}> 注入上下文</label>
-          </div>
-          <div class="form-group">
-            <label><input type="checkbox" id="cfg_require_verbatim" ${CONFIG.REQUIRE_AI_VERBATIM ? 'checked' : ''}> 仅接受真实摘录</label>
-          </div>
-          <div class="form-group">
-            <label><input type="checkbox" id="cfg_ai_only" ${CONFIG.AI_ONLY ? 'checked' : ''}> 仅 AI 生成（禁用语料库）</label>
-          </div>
-          <div class="form-group">
-            <label>AI 采纳概率 (0~1)：<input type="number" step="0.05" min="0" max="1" id="cfg_ai_prob" value="${CONFIG.AI_PICK_PROB}" class="text_pole" style="width:80px;"></label>
-          </div>
-          <div class="form-group">
-            <label>库抽样条数：<input type="number" min="1" max="60" id="cfg_lib_sample" value="${CONFIG.LIB_SAMPLE_SIZE}" class="text_pole" style="width:80px;"></label>
-          </div>
-          <div class="form-group">
-            <label>中文最长：<input type="number" min="4" max="50" id="cfg_max_zh" value="${CONFIG.MAX_ZH}" class="text_pole" style="width:80px;"></label>
-            <label>英文最长：<input type="number" min="10" max="300" id="cfg_max_en" value="${CONFIG.MAX_EN}" class="text_pole" style="width:80px; margin-left:6px;"></label>
-          </div>
-          <div class="form-group">
-            <label>风格提示</label>
-            <textarea id="cfg_style_prompt" class="text_pole" rows="4" placeholder="例如：文艺忧郁、贴合当前章节情绪……">${CONFIG.STYLE_PROMPT || ''}</textarea>
-          </div>
-        </div>
-      </div>
-      <style>
-        #merged_slogan_panel .form-group{margin:6px 0;}
-        #merged_slogan_panel input.text_pole{padding:2px 6px;}
-        #merged_slogan_panel textarea.text_pole{width:100%; padding:4px 6px;}
-      </style>
       `;
       $('#extensions_settings').append(html);
 
