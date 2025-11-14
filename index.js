@@ -380,25 +380,23 @@ let lastSpeed = null;
     if (!wrappers.length) return null;
 
     const vh = window.innerHeight || document.documentElement.clientHeight;
-    const targetY = vh * 0.35;
 
     let best = null;
-    let bestDist = Infinity;
+    let bestBottom = -Infinity;
 
     wrappers.forEach(w => {
       const rect = w.getBoundingClientRect();
-      if (rect.bottom < 0 || rect.top > vh) return;
+      // 完全在视窗上方或下方的都丢掉
+      if (rect.bottom <= 0 || rect.top >= vh) return;
 
-      const mid = (rect.top + rect.bottom) / 2;
-      const d = Math.abs(mid - targetY);
-      if (d < bestDist) {
-        bestDist = d;
+      if (rect.bottom > bestBottom) {
+        bestBottom = rect.bottom;
         best = w;
       }
     });
 
-    if (!best) best = wrappers[wrappers.length - 1];
-    return best;
+    // 视窗里有就选最下面那条，没有就返回 null（不滚任何标语）
+    return best || null;
   }
 
   function clearAllScrollExcept(keep) {
