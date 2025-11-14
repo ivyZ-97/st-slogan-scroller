@@ -607,23 +607,28 @@ let lastSpeed = null;
   }
 
   function getActiveWrapper() {
-    const wrappers = document.querySelectorAll('#chat .mes .mesAvatarWrapper');
+    const chat = document.getElementById('chat');
+    if (!chat) return null;
+  
+    const chatRect = chat.getBoundingClientRect();
+    const wrappers = chat.querySelectorAll('.mes .mesAvatarWrapper');
     if (!wrappers.length) return null;
-
-    const vh = window.innerHeight || document.documentElement.clientHeight;
-
+  
     let best = null;
     let bestBottom = -Infinity;
-
+  
     wrappers.forEach(w => {
       const rect = w.getBoundingClientRect();
-      if (rect.bottom <= 0 || rect.top >= vh) return;
+      // 和聊天区域没交集的直接略过
+      if (rect.bottom <= chatRect.top || rect.top >= chatRect.bottom) return;
+  
       if (rect.bottom > bestBottom) {
         bestBottom = rect.bottom;
         best = w;
       }
     });
-
+  
+    // 有就返回当前视窗里“最靠下”的那一条，没有就 null
     return best || null;
   }
 
@@ -650,9 +655,18 @@ let lastSpeed = null;
     }
 
     const wrapper = getActiveWrapper();
-    if (!wrapper) return;
-
+    
+    if (!wrapper) {
+      // 当前视窗里没有任何符合条件的消息 → 全部停止滚动
+      clearAllScrollExcept(null);
+      lastWrapper = null;
+      lastText = '';
+      lastNeedScroll = null;
+      return;
+    }
+    
     clearAllScrollExcept(wrapper);
+
 
     if (applyTimer) {
       clearTimeout(applyTimer);
