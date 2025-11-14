@@ -638,8 +638,11 @@ const EXT_NAME = 'merged_slogan';
       const needScroll = SCFG.enabled && textWidth > boxWidth;
 
       if (needScroll) {
-        wrapper.classList.add('slogan-scroll');
+        // 强制重启动画
+        wrapper.classList.remove('slogan-scroll');
+        void wrapper.offsetWidth; // 触发 reflow
         wrapper.style.animationDuration = `${SCFG.speedSec}s`;
+        wrapper.classList.add('slogan-scroll');
       } else {
         wrapper.classList.remove('slogan-scroll');
         wrapper.style.animationDuration = '';
