@@ -1,5 +1,5 @@
 (function () {
-    console.log("%c[SloganScroller] Loaded", "color:#4CAF50;font-weight:bold");
+    console.log("%c[SloganScroller] Loaded (last-message mode)", "color:#4CAF50;font-weight:bold");
 
     function measureTextWidth(text, pseudo) {
         const span = document.createElement("span");
@@ -21,45 +21,40 @@
         slogan = slogan.replace(/^["']|["']$/g, '').trim();
         if (!slogan) return;
 
-        const wrappers = document.querySelectorAll('.mes .mesAvatarWrapper');
-        if (!wrappers.length) return;
+        // 获取最后一条消息
+        const lastMes = document.querySelector("#chat .mes:last-of-type");
+        if (!lastMes) return;
 
-        wrappers.forEach(wrapper => {
-            const pseudo = getComputedStyle(wrapper, '::after');
-            const text = "| " + slogan;
+        const wrapper = lastMes.querySelector(".mesAvatarWrapper");
+        if (!wrapper) return;
 
-            const textWidth = measureTextWidth(text, pseudo);
+        const pseudo = getComputedStyle(wrapper, "::after");
+        const text = "| " + slogan;
 
-            // wrapper 实际可用宽度
-            const boxWidth = wrapper.getBoundingClientRect().width;
+        const textWidth = measureTextWidth(text, pseudo);
+        const boxWidth = wrapper.getBoundingClientRect().width;
 
-            // 控制台输出（调试用）
-            // console.log("textWidth:", textWidth, "boxWidth:", boxWidth);
+        // 只处理最后一条：全部清除 → 最后一条单独判断
+        document.querySelectorAll(".mesAvatarWrapper.slogan-scroll")
+            .forEach(el => el.classList.remove("slogan-scroll"));
 
-            if (textWidth > boxWidth) {
-                wrapper.classList.add('slogan-scroll');
-            } else {
-                wrapper.classList.remove('slogan-scroll');
-            }
-        });
+        if (textWidth > boxWidth) {
+            wrapper.classList.add("slogan-scroll");
+        }
     }
 
-    // 界面加载时启动
     function init() {
         updateSloganScroll();
 
-        // 监听聊天内容变化（AI 或用户消息出现时）
+        // 监听消息变化（AI 回复/用户发送）
         const chat = document.querySelector("#chat");
         if (chat) {
-            const observer = new MutationObserver(() => updateSloganScroll());
-            observer.observe(chat, { childList: true, subtree: true });
+            const observer = new MutationObserver(updateSloganScroll);
+            observer.observe(chat, { childList: true, subtree: false });
         }
 
-        // 监听窗口尺寸变化（手机横竖屏变化）
+        // 手机横竖屏 / 窗口变化
         window.addEventListener("resize", updateSloganScroll);
-
-        // 兜底：每 3 秒跑一次（极端情况下保证不失效）
-        setInterval(updateSloganScroll, 3000);
     }
 
     if (document.readyState === "complete" || document.readyState === "interactive") {
