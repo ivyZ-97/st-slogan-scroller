@@ -1277,74 +1277,81 @@ const SloganScrollerModule = {
     },
 
     updateSloganScrollImmediate() {
-        const st = this.getSettings();
-        if (!st.enabled) {
-            this.clearAllScroll();
-            return;
-        }
+    const st = this.getSettings();
+    if (!st.enabled) {
+        this.clearAllScroll();
+        return;
+    }
 
-        const wrapper = this.getActiveWrapper();
-        if (!wrapper) {
-            this.clearAllScroll();
-            return;
-        }
+    // 1. 选出当前“视口里最靠下”的那条消息头像
+    const wrapper = this.getActiveWrapper();
+    if (!wrapper) {
+        this.clearAllScroll();
+        return;
+    }
 
-        document
-            .querySelectorAll('#chat .mes .mesAvatarWrapper.slogan-scroll')
-            .forEach(el => {
-                if (el !== wrapper) {
-                    el.classList.remove('slogan-scroll');
-                    el.style.animationDuration = '';
-                }
-            });
-
-        const runCheckAndApply = () => {
-            const currentSlogan = this.getSloganFromCss();
-            if (!currentSlogan) {
-                wrapper.classList.remove('slogan-scroll');
-                wrapper.style.animationDuration = '';
-                return;
+    // 2. 只保留这一条的滚动状态，其他头像全部关掉
+    document
+        .querySelectorAll('#chat .mes .mesAvatarWrapper.slogan-scroll')
+        .forEach(el => {
+            if (el !== wrapper) {
+                el.classList.remove('slogan-scroll');
+                el.style.animationDuration = '';
             }
+        });
 
-            const pseudo = getComputedStyle(wrapper, '::after');
-            const textWidth = this.measureTextWidth(`| ${currentSlogan}`, pseudo);
-            const boxWidth = wrapper.getBoundingClientRect().width;
-            const needScroll = st.enabled && textWidth > boxWidth;
+    // 3. 读当前 CSS 变量里的文案
+    const currentSlogan = this.getSloganFromCss();
+    if (!currentSlogan) {
+        wrapper.classList.remove('slogan-scroll');
+        wrapper.style.animationDuration = '';
+        this.lastWrapper = wrapper;
+        this.lastText = '';
+        this.lastSpeed = st.speedSec;
+        this.lastNeedScroll = false;
+        return;
+    }
 
-            const changed =
-                wrapper !== this.lastWrapper ||
-                currentSlogan !== this.lastText ||
-                st.speedSec !== this.lastSpeed ||
-                needScroll !== this.lastNeedScroll;
+    // 4. 计算文本宽度，决定要不要滚动
+    const pseudo = getComputedStyle(wrapper, '::after');
+    const textWidth = this.measureTextWidth(`| ${currentSlogan}`, pseudo);
+    const boxWidth = wrapper.getBoundingClientRect().width;
+    const needScroll = textWidth > boxWidth;
 
-            this.lastWrapper = wrapper;
-            this.lastText = currentSlogan;
-            this.lastSpeed = st.speedSec;
-            this.lastNeedScroll = needScroll;
+    if (!needScroll) {
+        // 文案没溢出宽度 → 不滚
+        wrapper.classList.remove('slogan-scroll');
+        wrapper.style.animationDuration = '';
+        this.lastWrapper = wrapper;
+        this.lastText = currentSlogan;
+        this.lastSpeed = st.speedSec;
+        this.lastNeedScroll = false;
+        return;
+    }
 
-            if (!needScroll) {
-                wrapper.classList.remove('slogan-scroll');
-                wrapper.style.animationDuration = '';
-                return;
-            }
+    // 5. 只有在“真的变化”时才重启动画
+    const sameTarget  = wrapper === this.lastWrapper;
+    const sameText    = currentSlogan === this.lastText;
+    const sameSpeed   = st.speedSec === this.lastSpeed;
+    const wasScrolling = wrapper.classList.contains('slogan-scroll');
 
-            if (!changed && wrapper.classList.contains('slogan-scroll')) {
-                return;
-            }
+    this.lastWrapper = wrapper;
+    this.lastText = currentSlogan;
+    this.lastSpeed = st.speedSec;
+    this.lastNeedScroll = true;
 
-            wrapper.classList.remove('slogan-scroll');
-            void wrapper.offsetWidth;
-            wrapper.style.animationDuration = `${st.speedSec}s`;
-            wrapper.classList.add('slogan-scroll');
-        };
+    // ✅ 完全一样且已经在滚 → 不要动它，让 CSS 自己 infinite 循环
+    if (sameTarget && sameText && sameSpeed && wasScrolling) {
+        return;
+    }
 
-        if (st.delayMs > 0) {
-            setTimeout(runCheckAndApply, st.delayMs);
-        } else {
-            runCheckAndApply();
-        }
-    },
-
+    // ❗只有在：换楼层 / 换文案 / 改速度 的时候，才 reset 一次动画
+    wrapper.classList.remove('slogan-scroll');
+    void wrapper.offsetWidth; // 强制 reflow，重置动画起点
+    wrapper.style.animationDuration = `${st.speedSec}s`;
+    wrapper.classList.add('slogan-scroll');
+},
+    
     ensureCoreListeners() {
         if (this.initialized) return;
 
